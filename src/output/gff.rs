@@ -66,9 +66,27 @@ pub fn write_gff3(
                 "."
             };
 
-            // Build attributes with proper GFF3 escaping
+            // Build attributes with proper GFF3 escaping.
+            // GFF3 convention: ID first, then other tags in insertion order.
             let mut attrs = Vec::new();
+
+            // ID first (GFF3 convention, matches BioPerl behavior)
+            if let Some(values) = feature.tags.get("ID") {
+                for value in values {
+                    attrs.push(format!("ID={}", gff3_escape(value)));
+                }
+            }
+
+            // Add Name tag from gene (Perl Prokka adds this during GFF output)
+            if let Some(gene) = feature.get_tag("gene") {
+                attrs.push(format!("Name={}", gff3_escape(gene)));
+            }
+
+            // Remaining tags in insertion order
             for (key, values) in &feature.tags {
+                if key == "ID" {
+                    continue; // already emitted
+                }
                 for value in values {
                     attrs.push(format!("{}={}", gff3_escape(key), gff3_escape(value)));
                 }

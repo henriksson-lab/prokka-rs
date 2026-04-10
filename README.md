@@ -5,6 +5,13 @@ Rapid prokaryotic genome annotation — [Prokka](https://github.com/tseemann/pro
 prokka-rs annotates bacterial, archaeal, viral, and mitochondrial genomes by identifying features
 (tRNA, rRNA, ncRNA, CRISPRs, CDS) and assigning functional labels via hierarchical database searches.
 
+This is a translation of the original code and not the authorative implementation. This code should generate bitwise
+equal output to the original. Please report any deviations
+
+The aim of this project is to increase performance, especially by providing this code through a type-safe library interface.
+The code can also be compiled to be used for webassembly.
+
+
 ## Features
 
 - **Native gene prediction** via [prodigal-rs](https://github.com/henriksson-lab/prodigal-rs) (no external Prodigal binary needed)
@@ -90,12 +97,39 @@ for contig in &result.contigs {
 
 ## Benchmarks
 
-Measured on Linux x86_64, compiled with `-C target-cpu=native`:
+Compared against Prokka 1.15.6 (Perl) on Linux x86_64 (single-threaded, `--cpus 1`).
+Rust binary compiled with `RUSTFLAGS="-C target-cpu=native" cargo build --release`.
 
-| Test input | Size | Mode | Time |
-|-----------|------|------|------|
-| plasmid.fna | 57 KB | --noanno | 0.4s |
-| genome.fna | 6.7 MB | --noanno | 18s |
+### CDS prediction only (`--noanno`)
+
+| Input | Perl Prokka | prokka-rs | Speedup | CDS found |
+|-------|------------|-----------|---------|-----------|
+| plasmid.fna (57 KB) | 4.6s | 0.7s | **6.6x** | 63 (both) |
+| genome.fna (6.7 MB) | 58.7s | 39.7s | **1.5x** | identical |
+
+Both tools find the same number of CDS. prokka-rs uses prodigal-rs natively
+(no subprocess overhead), which accounts for most of the speedup on small inputs.
+
+### With BLAST annotation (`--fast`, 1 CPU)
+
+| Input | Perl Prokka | prokka-rs | Notes |
+|-------|------------|-----------|-------|
+| plasmid.fna (57 KB) | 16.1s | slower* | |
+| genome.fna (6.7 MB) | 20m 8s | slower* | |
+
+*blast-rs currently uses pairwise protein search (no indexed database),
+making annotation the main bottleneck. Perl Prokka uses NCBI BLAST+ with
+pre-indexed databases (`.pin`/`.psq`). Adding a multi-subject index to
+blast-rs would bring annotation performance in line with BLAST+.
+
+### With BLAST annotation (`--fast`, 8 CPUs)
+
+| Input | Perl Prokka |
+|-------|------------|
+| plasmid.fna (57 KB) | 8.8s |
+
+prokka-rs does not yet parallelize BLAST searches across CPUs via GNU Parallel
+like Perl Prokka. This is planned.
 
 ## Command Line Options
 

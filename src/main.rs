@@ -16,6 +16,13 @@ struct Cli {
     #[arg(long)]
     debug: bool,
 
+    /// Print citation for referencing prokka-rs
+    #[arg(long)]
+    citation: bool,
+    /// List all software dependencies
+    #[arg(long)]
+    depends: bool,
+
     // Setup
     /// Prokka database root folder
     #[arg(long)]
@@ -201,6 +208,32 @@ impl Cli {
 
 fn main() {
     let cli = Cli::parse();
+
+    // Handle info commands
+    if cli.citation {
+        eprintln!("\nIf you use prokka-rs in your work, please cite:\n");
+        eprintln!("  Seemann T, \"Prokka: Rapid Prokaryotic Genome Annotation\",");
+        eprintln!("  Bioinformatics, 2014 Jul 15;30(14):2068-9.\n");
+        eprintln!("  PMID:24642063");
+        eprintln!("  doi:10.1093/bioinformatics/btu153");
+        eprintln!("  http://www.ncbi.nlm.nih.gov/pubmed/24642063\n");
+        return;
+    }
+
+    if cli.depends {
+        // Native Rust (no external binary needed)
+        eprintln!("prodigal-rs (native, built-in)");
+        eprintln!("blast-rs (native, built-in)");
+        eprintln!("hmmer-pure-rs (native, built-in)");
+        // External tools (optional)
+        eprintln!("aragorn >= 1.2 (optional, tRNA prediction)");
+        eprintln!("barrnap >= 0.4 (optional, rRNA prediction)");
+        eprintln!("minced >= 2.0 (optional, CRISPR detection)");
+        eprintln!("cmscan >= 1.1 (optional, ncRNA with --rfam)");
+        eprintln!("signalp >= 3.0 (optional, signal peptides with --gram)");
+        eprintln!("tbl2asn (optional, GenBank/Sequin output)");
+        return;
+    }
 
     // Handle setup commands that don't need input
     if cli.listdb || cli.setupdb || cli.cleandb {

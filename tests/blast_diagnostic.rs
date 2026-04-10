@@ -1,23 +1,12 @@
-fn simple_matrix() -> [[i32; blast_rs::matrix::AA_SIZE]; blast_rs::matrix::AA_SIZE] {
-    let mut m = [[-2i32; blast_rs::matrix::AA_SIZE]; blast_rs::matrix::AA_SIZE];
-    for i in 1..21 { m[i][i] = 5; }
-    m
-}
-
-/// Verify simple protein matrix self-scores are positive for standard amino acids.
+/// Verify BLOSUM62 matrix self-scores are positive for standard amino acids.
 #[test]
-fn test_simple_matrix_self_scores() {
-    // Simple matrix: +5 diagonal for indices 1-20, -2 elsewhere
-    let mut m = [[-2i32; blast_rs::matrix::AA_SIZE]; blast_rs::matrix::AA_SIZE];
-    for i in 1..21 { m[i][i] = 5; }
-
-    let m_idx = blast_rs::input::aminoacid_to_ncbistdaa(b'M') as usize;
-    let a_idx = blast_rs::input::aminoacid_to_ncbistdaa(b'A') as usize;
-    assert!(m[m_idx][m_idx] > 0, "M self-score: {}", m[m_idx][m_idx]);
-    assert!(m[a_idx][a_idx] > 0, "A self-score: {}", m[a_idx][a_idx]);
-
-    // 3-mer self-score should be 15 (5+5+5), well above threshold=11
-    assert_eq!(m[m_idx][m_idx] + m[a_idx][a_idx] + m[a_idx][a_idx], 15);
+fn test_blosum62_self_scores() {
+    let m = &blast_rs::matrix::BLOSUM62;
+    let m_idx = blast_rs::input::aminoacid_to_ncbistdaa(b'M') as usize; // 12
+    let a_idx = blast_rs::input::aminoacid_to_ncbistdaa(b'A') as usize; // 1
+    assert_eq!(m[a_idx][a_idx], 4, "A-A should be 4");
+    assert_eq!(m[m_idx][m_idx], 5, "M-M should be 5");
+    assert_eq!(m[20][20], 11, "W-W should be 11");
 }
 
 /// Diagnostic test: verify blast-rs can find a self-hit (protein against itself).
@@ -33,7 +22,7 @@ fn test_blast_self_hit() {
     // First try ungapped scan to see if seeds are found
     let ungapped = blast_rs::protein_lookup::protein_scan(
         &query, &subject,
-        &simple_matrix(),
+        &blast_rs::matrix::BLOSUM62,
         3,    // word_size
         11.0, // threshold
         30,   // ungap_x_dropoff
@@ -45,7 +34,7 @@ fn test_blast_self_hit() {
 
     let hits = blast_rs::protein_lookup::protein_gapped_scan(
         &query, &subject,
-        &simple_matrix(),
+        &blast_rs::matrix::BLOSUM62,
         3,    // word_size
         11.0, // threshold
         30,   // ungap_x_dropoff
@@ -74,7 +63,7 @@ fn test_blast_similar_proteins() {
 
     let hits = blast_rs::protein_lookup::protein_gapped_scan(
         &query, &subject,
-        &simple_matrix(),
+        &blast_rs::matrix::BLOSUM62,
         3, 11.0, 30, 11, 1, 50, 0,
     );
 
@@ -109,7 +98,7 @@ fn test_blast_sprot_finds_hits() {
         let subj_aa: Vec<u8> = subj.sequence.iter().map(|&b| blast_rs::input::aminoacid_to_ncbistdaa(b)).collect();
         let hits = blast_rs::protein_lookup::protein_gapped_scan(
             &query, &subj_aa,
-            &simple_matrix(),
+            &blast_rs::matrix::BLOSUM62,
             3, 11.0, 30, 11, 1, 50, 0,
         );
         for h in &hits {

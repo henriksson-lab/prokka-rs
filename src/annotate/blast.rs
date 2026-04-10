@@ -5,18 +5,6 @@ use crate::config::ProkkaConfig;
 use crate::error::ProkkaError;
 use crate::model::Contig;
 
-use blast_rs::matrix::AA_SIZE;
-
-/// Create a simplified protein scoring matrix compatible with NCBIstdaa encoding.
-/// +5 on diagonal for standard amino acids (indices 1-20), -2 elsewhere.
-/// This matches the approach used in blast-rs main.rs.
-fn make_simple_protein_matrix() -> [[i32; AA_SIZE]; AA_SIZE] {
-    let mut m = [[-2i32; AA_SIZE]; AA_SIZE];
-    for (i, row) in m.iter_mut().enumerate().take(21).skip(1) {
-        row[i] = 5;
-    }
-    m
-}
 
 /// Annotate unannotated CDS features via BLAST protein search.
 ///
@@ -76,10 +64,7 @@ pub fn annotate_blast(
         None => blast_rs::stat::protein_ungapped_kbp(),
     };
 
-    // NOTE: blast_rs::matrix::BLOSUM62 has incorrect indexing for NCBIstdaa encoding.
-    // Use simplified identity-like matrix matching blast-rs main.rs behavior:
-    // +5 on diagonal for standard amino acids (indices 1-20), -2 elsewhere.
-    let matrix = make_simple_protein_matrix();
+    let matrix = &blast_rs::matrix::BLOSUM62;
 
     let mut num_annotated = 0;
 
@@ -131,7 +116,7 @@ pub fn annotate_blast(
                 let hits = blast_rs::protein_lookup::protein_gapped_scan(
                     &query_encoded,
                     subj_encoded,
-                    &matrix,
+                    matrix,
                     3,    // word_size
                     11.0, // threshold
                     30,   // ungap_x_dropoff

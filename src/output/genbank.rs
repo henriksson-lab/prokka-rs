@@ -118,7 +118,16 @@ fn write_basic_genbank(
         contigs.push((current_id, current_seq));
     }
 
-    let date = chrono::Local::now().format("%d-%b-%Y").to_string().to_uppercase();
+    let date = {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let days = (secs / 86400) as i64;
+        let months = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+        let (y, m, d) = crate::pipeline::days_to_date(days);
+        format!("{:02}-{}-{:04}", d, months[(m - 1) as usize], y)
+    };
 
     for (id, seq) in &contigs {
         let len = seq.len();

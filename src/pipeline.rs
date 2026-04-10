@@ -1,6 +1,36 @@
 use std::io::Write;
 use std::path::Path;
 
+/// Get current time as HH:MM:SS string (matching Perl Prokka's log format).
+fn current_time_str() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // Convert to local time approximation (UTC for now)
+    let day_secs = (secs % 86400) as u32;
+    let h = day_secs / 3600;
+    let m = (day_secs % 3600) / 60;
+    let s = day_secs % 60;
+    format!("{:02}:{:02}:{:02}", h, m, s)
+}
+
+/// Convert days since Unix epoch to (year, month, day).
+pub fn days_to_date(days: i64) -> (i64, u32, u32) {
+    // Algorithm from http://howardhinnant.github.io/date_algorithms.html
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
 use crate::annotate::database::{AnnotationDb, DbFormat};
 use crate::config::ProkkaConfig;
 use crate::error::ProkkaError;
@@ -253,11 +283,7 @@ pub fn annotate(
         ));
     }
 
-    // 6. Signal peptide detection (SignalP, if --gram)
-    // Deferred — SignalP is optional/proprietary
-
-    // ---- Assign features to contigs ----
-    // Group features by contig ID
+    // ---- Assign features to contigs (needed before SignalP) ----
     let mut all_features = Vec::new();
     all_features.extend(trna_features);
     all_features.extend(rrna_features);
@@ -277,6 +303,31 @@ pub fn annotate(
             a.start.cmp(&b.start)
                 .then(b.end.cmp(&a.end))
         });
+    }
+
+    // 6. Signal peptide detection (SignalP, if --gram)
+    if config.gram.is_some() {
+        if let Some(fna) = fna_path {
+            let outdir = fna.parent().unwrap_or(Path::new("."));
+            match crate::predict::signalp::predict_signalp(outdir, &contigs, config) {
+                Ok(features) => {
+                    if !features.is_empty() {
+                        log.push(format!("Found {} signal peptides", features.len()));
+                        for f in features {
+                            if let Some(contig) = contigs.iter_mut().find(|c| c.id == f.seq_id) {
+                                contig.features.push(f);
+                            }
+                        }
+                    }
+                }
+                Err(ProkkaError::ToolNotFound { .. }) => {
+                    log.push("SignalP not found, skipping signal peptide detection.".into());
+                }
+                Err(e) => {
+                    log.push(format!("SignalP error: {}", e));
+                }
+            }
+        }
     }
 
     // ---- Phase 4: CDS Annotation ----
@@ -326,28 +377,6 @@ pub fn annotate(
             log.push(format!("Annotated {} CDS from {}", annotated, db.path));
         }
 
-        // Label remaining unannotated as "hypothetical protein"
-        let mut num_hypo = 0;
-        for contig in &mut contigs {
-            for feature in &mut contig.features {
-                if feature.feature_type == crate::model::FeatureType::CDS && !feature.has_tag("product") {
-                    feature.add_tag("product", crate::postprocess::product::HYPO);
-                    num_hypo += 1;
-                }
-            }
-        }
-        if num_hypo > 0 {
-            log.push(format!("Labelled {} proteins as 'hypothetical protein'", num_hypo));
-        }
-    } else {
-        // --noanno mode: label all CDS as "unannotated protein"
-        for contig in &mut contigs {
-            for feature in &mut contig.features {
-                if feature.feature_type == crate::model::FeatureType::CDS && !feature.has_tag("product") {
-                    feature.add_tag("product", "unannotated protein");
-                }
-            }
-        }
     }
 
     // ---- Phase 5: Post-processing ----
@@ -382,11 +411,44 @@ pub fn annotate(
         }
     }
 
+    // Detect possible pseudo genes (adjacent CDS with same annotation)
+    for contig in &contigs {
+        let mut prev_product = String::new();
+        for feature in contig.features.iter().filter(|f| f.feature_type == crate::model::FeatureType::CDS) {
+            let product = feature.get_tag("product").unwrap_or("").to_string();
+            if product == prev_product
+                && product != crate::postprocess::product::HYPO
+                && product != "unannotated protein"
+            {
+                log.push(format!(
+                    "Possible /pseudo '{}' at {} position {}",
+                    product, feature.seq_id, feature.start
+                ));
+            }
+            prev_product = product;
+        }
+    }
+
     // Gene deduplication
     crate::postprocess::gene_dedup::deduplicate_genes(&mut contigs);
 
     // Locus tag assignment
     crate::postprocess::locus_assign::assign_locus_tags(&mut contigs, config);
+
+    // Label unannotated CDS (after locus_tag assignment, to match Perl tag order)
+    let empty_label = if config.noanno { "unannotated protein" } else { crate::postprocess::product::HYPO };
+    let mut num_hypo = 0;
+    for contig in &mut contigs {
+        for feature in &mut contig.features {
+            if feature.feature_type == crate::model::FeatureType::CDS && !feature.has_tag("product") {
+                feature.add_tag("product", empty_label);
+                num_hypo += 1;
+            }
+        }
+    }
+    if num_hypo > 0 {
+        log.push(format!("Labelled {} proteins as '{}'", num_hypo, empty_label));
+    }
 
     // ---- Build statistics ----
     let mut stats = AnnotationStats {
@@ -412,8 +474,33 @@ pub fn annotate(
 ///
 /// This is the high-level function used by the CLI.
 pub fn run(input: &Path, config: &mut ProkkaConfig) -> Result<(), ProkkaError> {
+    let start_time = std::time::Instant::now();
+
     config.apply_compliant();
     config.validate()?;
+
+    // Incompatible option checks (matching Perl Prokka lines 267-270)
+    if config.noanno && config.proteins.is_some() {
+        return Err(ProkkaError::Other(
+            "In --noanno mode, the --proteins option will not be used!".into(),
+        ));
+    }
+    if config.noanno && config.hmms.is_some() {
+        return Err(ProkkaError::Other(
+            "In --noanno mode, the --hmms option will not be used!".into(),
+        ));
+    }
+    if config.fast && config.hmms.is_some() {
+        return Err(ProkkaError::Other(
+            "In --fast mode, the --hmms option will not be used".into(),
+        ));
+    }
+
+    // Welcome banner
+    if !config.quiet {
+        eprintln!("This is prokka-rs {}", env!("CARGO_PKG_VERSION"));
+        eprintln!("Homepage is {}", env!("CARGO_PKG_HOMEPAGE"));
+    }
 
     // Resolve locus_tag
     if config.locustag.is_none() {
@@ -422,8 +509,16 @@ pub fn run(input: &Path, config: &mut ProkkaConfig) -> Result<(), ProkkaError> {
 
     // Resolve output directory
     let prefix = config.prefix.clone().unwrap_or_else(|| {
-        let now = chrono::Local::now();
-        format!("PROKKA_{}", now.format("%m%d%Y"))
+        // Generate date-based prefix without chrono dependency.
+        // Use std::time to get seconds since epoch, then compute MMDDYYYY.
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        // Simple date calculation (UTC, matching Perl Prokka's US date format)
+        let days = (secs / 86400) as i64;
+        let (y, m, d) = days_to_date(days);
+        format!("PROKKA_{:02}{:02}{:04}", m, d, y)
     });
     config.prefix = Some(prefix.clone());
 
@@ -462,10 +557,10 @@ pub fn run(input: &Path, config: &mut ProkkaConfig) -> Result<(), ProkkaError> {
     // Run annotation pipeline
     let result = annotate(contigs, config, Some(&fna_path))?;
 
-    // Print log
+    // Print log with timestamps
     if !config.quiet {
         for line in &result.log {
-            eprintln!("[prokka-rs] {}", line);
+            eprintln!("[{}] {}", current_time_str(), line);
         }
     }
 
@@ -532,10 +627,14 @@ pub fn run(input: &Path, config: &mut ProkkaConfig) -> Result<(), ProkkaError> {
 
     if !config.quiet {
         eprintln!("Annotation finished successfully.");
+        let walltime = start_time.elapsed();
+        eprintln!("Walltime used: {:.2} minutes", walltime.as_secs_f64() / 60.0);
         eprintln!("Output files:");
         if let Ok(entries) = std::fs::read_dir(&outdir) {
-            for entry in entries.flatten() {
-                eprintln!("  {}", entry.path().display());
+            let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+            paths.sort();
+            for path in paths {
+                eprintln!("  {}", path.display());
             }
         }
     }
