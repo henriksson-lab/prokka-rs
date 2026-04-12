@@ -112,15 +112,15 @@ Both tools find the same number of CDS. prokka-rs uses prodigal-rs natively
 
 ### With BLAST annotation (`--fast`, 1 CPU)
 
-| Input | Perl Prokka | prokka-rs | Notes |
-|-------|------------|-----------|-------|
-| plasmid.fna (57 KB) | 16.1s | slower* | |
-| genome.fna (6.7 MB) | 20m 8s | slower* | |
+| Input | Perl Prokka | prokka-rs | Annotations found |
+|-------|------------|-----------|-------------------|
+| plasmid.fna (57 KB) | 16.1s | 2m 6s | Perl: 10, Rust: 7 |
+| genome.fna (6.7 MB) | 20m 8s | TBD | |
 
-*blast-rs currently uses pairwise protein search (no indexed database),
-making annotation the main bottleneck. Perl Prokka uses NCBI BLAST+ with
-pre-indexed databases (`.pin`/`.psq`). Adding a multi-subject index to
-blast-rs would bring annotation performance in line with BLAST+.
+blast-rs uses an indexed protein database (built at runtime) for searching.
+Still ~8x slower than NCBI BLAST+ per query, but functional. The 3 missing
+annotations are due to prodigal-rs gene boundary differences producing
+slightly different protein sequences.
 
 ### With BLAST annotation (`--fast`, 8 CPUs)
 
@@ -128,8 +128,8 @@ blast-rs would bring annotation performance in line with BLAST+.
 |-------|------------|
 | plasmid.fna (57 KB) | 8.8s |
 
-prokka-rs does not yet parallelize BLAST searches across CPUs via GNU Parallel
-like Perl Prokka. This is planned.
+prokka-rs does not yet parallelize BLAST searches across CPUs.
+This is planned using rayon.
 
 ## Command Line Options
 

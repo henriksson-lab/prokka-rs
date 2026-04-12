@@ -16,7 +16,7 @@ pub fn predict_ncrna(
     config: &ProkkaConfig,
     total_bp: usize,
 ) -> Result<Vec<SeqFeature>, ProkkaError> {
-    if !config.rfam {
+    if !config.rfam || total_bp == 0 {
         return Ok(Vec::new());
     }
 

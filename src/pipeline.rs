@@ -1,18 +1,25 @@
 use std::io::Write;
 use std::path::Path;
 
-/// Get current time as HH:MM:SS string (matching Perl Prokka's log format).
+/// Get current local time as HH:MM:SS string (matching Perl Prokka's log format).
 fn current_time_str() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs();
-    // Convert to local time approximation (UTC for now)
-    let day_secs = (secs % 86400) as u32;
-    let h = day_secs / 3600;
-    let m = (day_secs % 3600) / 60;
-    let s = day_secs % 60;
-    format!("{:02}:{:02}:{:02}", h, m, s)
+        .as_secs() as i64;
+    // Use libc localtime_r for proper timezone/DST handling
+    #[cfg(unix)]
+    {
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        unsafe { libc::localtime_r(&secs, &mut tm) };
+        format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
+    }
+    #[cfg(not(unix))]
+    {
+        // Fallback to UTC on non-unix
+        let day_secs = (secs as u64 % 86400) as u32;
+        format!("{:02}:{:02}:{:02}", day_secs / 3600, (day_secs % 3600) / 60, day_secs % 60)
+    }
 }
 
 /// Convert days since Unix epoch to (year, month, day).
@@ -46,15 +53,38 @@ fn build_annotation_databases(config: &ProkkaConfig) -> Vec<AnnotationDb> {
     let dbdir = &config.dbdir;
 
     // User-supplied proteins (highest priority)
+    // Perl Prokka accepts FASTA, GenBank, or EMBL format and converts if needed.
     if let Some(ref proteins) = config.proteins {
+        let fasta_path = match crate::genbank_to_fasta::detect_format(proteins) {
+            Ok("genbank") => {
+                let converted = config.outdir.clone()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join("proteins.faa");
+                match crate::genbank_to_fasta::genbank_to_fasta(proteins, &converted) {
+                    Ok(_) => converted.display().to_string(),
+                    Err(_) => proteins.display().to_string(),
+                }
+            }
+            Ok("embl") => {
+                let converted = config.outdir.clone()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join("proteins.faa");
+                match crate::genbank_to_fasta::embl_to_fasta(proteins, &converted) {
+                    Ok(_) => converted.display().to_string(),
+                    Err(_) => proteins.display().to_string(),
+                }
+            }
+            _ => proteins.display().to_string(),
+        };
+
+        let src = proteins.file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_default();
         databases.push(AnnotationDb {
-            path: proteins.display().to_string(),
+            path: fasta_path,
             source_prefix: if config.compliant {
                 String::new()
             } else {
-                let src = proteins.file_name()
-                    .map(|f| f.to_string_lossy().to_string())
-                    .unwrap_or_default();
                 format!("similar to AA sequence:{}:", src)
             },
             format: DbFormat::Blast,
@@ -416,7 +446,8 @@ pub fn annotate(
         let mut prev_product = String::new();
         for feature in contig.features.iter().filter(|f| f.feature_type == crate::model::FeatureType::CDS) {
             let product = feature.get_tag("product").unwrap_or("").to_string();
-            if product == prev_product
+            if !product.is_empty()
+                && product == prev_product
                 && product != crate::postprocess::product::HYPO
                 && product != "unannotated protein"
             {

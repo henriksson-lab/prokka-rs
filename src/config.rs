@@ -203,7 +203,7 @@ impl ProkkaConfig {
     /// Validate configuration, returning an error if invalid.
     pub fn validate(&self) -> Result<(), crate::error::ProkkaError> {
         let gcode = self.effective_gcode();
-        if !(1..=25).contains(&gcode) {
+        if !(1..=25).contains(&gcode) || matches!(gcode, 7 | 8 | 17..=20) {
             return Err(crate::error::ProkkaError::InvalidGeneticCode(gcode));
         }
         if self.evalue < 0.0 {

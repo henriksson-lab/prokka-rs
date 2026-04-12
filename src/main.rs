@@ -3,7 +3,7 @@ use clap::Parser;
 
 /// Rapid prokaryotic genome annotation.
 #[derive(Parser, Debug)]
-#[command(name = "prokka-rs", version, about)]
+#[command(name = "prokka-rs", version = env!("CARGO_PKG_VERSION"), about)]
 struct Cli {
     /// Input contig FASTA file
     input: Option<PathBuf>,

@@ -1,5 +1,6 @@
 pub mod codon_table;
 pub mod config;
+pub mod genbank_to_fasta;
 pub mod error;
 pub mod input;
 pub mod locus_tag;

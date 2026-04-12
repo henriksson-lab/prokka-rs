@@ -51,7 +51,10 @@ pub fn parse_aragorn_output(
     output: &str,
     contig_lengths: &[(String, usize)],
 ) -> Result<Vec<SeqFeature>, ProkkaError> {
-    let coord_re = Regex::new(r"(c)?\[-?(\d+),(\d+)\]").unwrap();
+    static COORD_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(c)?\[-?(\d+),(\d+)\]").unwrap()
+    });
+    let coord_re = &*COORD_RE;
 
     // Build a lookup for contig lengths
     let contig_len_map: std::collections::HashMap<&str, usize> = contig_lengths

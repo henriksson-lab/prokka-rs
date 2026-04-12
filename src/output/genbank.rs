@@ -126,7 +126,8 @@ fn write_basic_genbank(
         let days = (secs / 86400) as i64;
         let months = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
         let (y, m, d) = crate::pipeline::days_to_date(days);
-        format!("{:02}-{}-{:04}", d, months[(m - 1) as usize], y)
+        let m_idx = ((m.max(1) - 1) as usize).min(11);
+        format!("{:02}-{}-{:04}", d, months[m_idx], y)
     };
 
     for (id, seq) in &contigs {
@@ -156,7 +157,61 @@ fn write_basic_genbank(
         writeln!(writer, "                     /mol_type=\"genomic DNA\"")?;
         writeln!(writer, "                     /strain=\"{}\"", config.strain)?;
 
-        // TODO: Read .tbl and add features here
+        // Read .tbl and convert features to GenBank format
+        let tbl_path = outdir.join(format!("{}.tbl", prefix));
+        if tbl_path.exists() {
+            let tbl = std::fs::read_to_string(&tbl_path)?;
+            let mut lines = tbl.lines().peekable();
+            // Skip the ">Feature" header for this contig
+            while let Some(line) = lines.peek() {
+                if line.starts_with(">Feature") {
+                    lines.next();
+                    break;
+                }
+                lines.next();
+            }
+            // Parse feature blocks
+            while let Some(line) = lines.peek() {
+                if line.starts_with(">Feature") {
+                    break; // next contig
+                }
+                let line = lines.next().unwrap();
+                let parts: Vec<&str> = line.split('\t').collect();
+                if parts.len() >= 3 {
+                    // Feature coordinates line: L\tR\ttype
+                    let left = parts[0].trim();
+                    let right = parts[1].trim();
+                    let ftype = parts[2].trim();
+
+                    // Convert to GenBank location
+                    let (start, end, complement) = if left.parse::<usize>().unwrap_or(0)
+                        > right.parse::<usize>().unwrap_or(0)
+                    {
+                        (right, left, true)
+                    } else {
+                        (left, right, false)
+                    };
+                    let location = if complement {
+                        format!("complement({}..{})", start, end)
+                    } else {
+                        format!("{}..{}", start, end)
+                    };
+                    writeln!(writer, "     {:<16}{}", ftype, location)?;
+
+                    // Qualifier lines
+                    while let Some(qline) = lines.peek() {
+                        if !qline.starts_with("\t\t\t") {
+                            break;
+                        }
+                        let qline = lines.next().unwrap();
+                        let trimmed = qline.trim();
+                        if let Some((key, val)) = trimmed.split_once('\t') {
+                            writeln!(writer, "                     /{}=\"{}\"", key, val)?;
+                        }
+                    }
+                }
+            }
+        }
 
         // ORIGIN section
         writeln!(writer, "ORIGIN")?;

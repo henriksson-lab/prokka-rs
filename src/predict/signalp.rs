@@ -65,6 +65,7 @@ pub fn predict_signalp(
         }
         if count > SIGNALP_MAXSEQ {
             let _ = std::fs::remove_file(&spout_path);
+            eprintln!("Skipping SignalP: {} CDS exceeds limit of {}", count, SIGNALP_MAXSEQ);
             return Ok(Vec::new());
         }
     }
@@ -92,6 +93,9 @@ pub fn predict_signalp(
                 continue;
             }
             let (ci, fi) = cds_map[idx];
+            if ci >= contigs.len() || fi >= contigs[ci].features.len() {
+                continue;
+            }
             let parent = &contigs[ci].features[fi];
 
             // Convert cleavage position to DNA coordinates

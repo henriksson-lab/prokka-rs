@@ -120,11 +120,13 @@ pub fn parse_gff3_rrna(gff_output: &str) -> Result<Vec<SeqFeature>, ProkkaError>
 }
 
 /// Predict rRNA using RNAmmer (alternative to Barrnap).
+///
+/// Runs `rnammer -S {mode} -xml {xmlfile} {fna}` and parses the XML output.
+/// Matches Perl Prokka lines 573-604.
 fn predict_rrna_rnammer(
     fna_path: &Path,
     mode: &str,
 ) -> Result<Vec<SeqFeature>, ProkkaError> {
-    // RNAmmer mode mapping: bac -> bac, arc -> arc
     let rnammer_mode = match mode {
         "bac" => "bac",
         "arc" => "arc",
@@ -132,26 +134,94 @@ fn predict_rrna_rnammer(
         _ => return Ok(Vec::new()),
     };
 
-    let output = Command::new("rnammer")
+    // Write XML to temp file
+    let xml_path = fna_path.with_extension("rnammer.xml");
+
+    let status = Command::new("rnammer")
         .arg("-S")
         .arg(rnammer_mode)
-        .arg("-gff")
-        .arg("-")
+        .arg("-xml")
+        .arg(&xml_path)
         .arg(fna_path)
-        .output()
+        .status()
         .map_err(|_| ProkkaError::ToolNotFound {
             tool: "rnammer".to_string(),
         })?;
 
-    if !output.status.success() {
+    if !status.success() {
+        let _ = std::fs::remove_file(&xml_path);
         return Err(ProkkaError::ToolFailed {
             tool: "rnammer".to_string(),
-            message: String::from_utf8_lossy(&output.stderr).to_string(),
+            message: "rnammer returned non-zero exit code".to_string(),
         });
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_gff3_rrna(&stdout)
+    let xml_content = std::fs::read_to_string(&xml_path).unwrap_or_default();
+    let _ = std::fs::remove_file(&xml_path);
+
+    parse_rnammer_xml(&xml_content)
+}
+
+/// Parse RNAmmer XML output into SeqFeature list.
+///
+/// XML structure: <rnammer><entries><entry><sequenceEntry>, <mol>, <start>, <stop>, <direction>
+fn parse_rnammer_xml(xml: &str) -> Result<Vec<SeqFeature>, ProkkaError> {
+    let mut features = Vec::new();
+
+    // Simple tag-based XML parsing (avoids XML crate dependency).
+    // Each <entry> block contains the fields we need.
+    for entry_block in xml.split("<entry>").skip(1) {
+        let seq_id = extract_xml_tag(entry_block, "sequenceEntry").unwrap_or_default();
+        let mut desc = extract_xml_tag(entry_block, "mol").unwrap_or_default();
+        let start_str = extract_xml_tag(entry_block, "start").unwrap_or_default();
+        let stop_str = extract_xml_tag(entry_block, "stop").unwrap_or_default();
+        let direction_str = extract_xml_tag(entry_block, "direction").unwrap_or_default();
+
+        if seq_id.is_empty() {
+            continue;
+        }
+
+        let start: usize = match start_str.parse() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let end: usize = match stop_str.parse() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let strand = match direction_str.as_str() {
+            "-1" | "-" => Strand::Reverse,
+            _ => Strand::Forward,
+        };
+
+        // Perl: $desc =~ s/s_r/S ribosomal /i;
+        desc = desc.replace("s_r", "S ribosomal ").replace("S_r", "S ribosomal ");
+
+        let tool = "RNAmmer".to_string();
+        let mut feature = SeqFeature::new(
+            FeatureType::RRNA,
+            seq_id,
+            tool.clone(),
+            start,
+            end,
+            strand,
+        );
+        feature.add_tag("product", &desc);
+        feature.add_tag("inference", &format!("COORDINATES:profile:{}", tool));
+
+        features.push(feature);
+    }
+
+    Ok(features)
+}
+
+/// Extract text content of a simple XML tag like <tag>content</tag>.
+fn extract_xml_tag(block: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let start = block.find(&open)? + open.len();
+    let end = block[start..].find(&close)? + start;
+    Some(block[start..end].trim().to_string())
 }
 
 #[cfg(test)]

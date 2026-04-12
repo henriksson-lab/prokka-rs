@@ -5,12 +5,10 @@ use crate::config::ProkkaConfig;
 use crate::error::ProkkaError;
 use crate::model::Contig;
 
-
 /// Annotate unannotated CDS features via BLAST protein search.
 ///
-/// For each unannotated CDS, translates to protein and searches against
-/// the BLAST database using blast-rs. Only CDS without a 'product' tag
-/// are processed.
+/// Builds an indexed BlastDb from the FASTA database, then runs each
+/// unannotated CDS query through `blastp()` for fast indexed search.
 ///
 /// Replicates Perl Prokka lines 1075-1161.
 pub fn annotate_blast(
@@ -27,50 +25,47 @@ pub fn annotate_blast(
     let coverage_threshold = db.min_coverage.unwrap_or(config.coverage);
     let gcode = config.effective_gcode();
 
-    // Load database subjects from FASTA
+    // Load FASTA and build indexed BlastDb
     let db_file = std::fs::File::open(db_path)
         .map_err(|e| ProkkaError::Blast(format!("Cannot open database {}: {}", db.path, e)))?;
-    let subjects = blast_rs::input::parse_fasta(db_file);
+    let records = blast_rs::input::parse_fasta(db_file);
 
-    if subjects.is_empty() {
+    if records.is_empty() {
         return Ok(0);
     }
 
-    // Pre-encode all subjects
-    let encoded_subjects: Vec<(String, String, Vec<u8>)> = subjects
-        .iter()
-        .map(|s| {
-            let encoded: Vec<u8> = s
-                .sequence
-                .iter()
-                .map(|&b| blast_rs::input::aminoacid_to_ncbistdaa(b))
-                .collect();
-            (s.id.clone(), s.defline.clone(), encoded)
-        })
-        .collect();
+    // Build indexed protein database in a temp directory
+    let tmp_dir = tempfile::tempdir()
+        .map_err(|e| ProkkaError::Blast(format!("Cannot create temp dir: {}", e)))?;
+    let db_base = tmp_dir.path().join("blastdb");
 
-    // Calculate total database length for E-value computation
-    let db_total_len: i64 = encoded_subjects.iter().map(|(_, _, s)| s.len() as i64).sum();
-    let num_db_seqs = encoded_subjects.len() as i32;
+    let mut builder = blast_rs::BlastDbBuilder::new(
+        blast_rs::db::DbType::Protein,
+        "prokka_annotation_db",
+    );
+    for rec in &records {
+        builder.add(blast_rs::SequenceEntry {
+            title: rec.defline.clone(),
+            accession: rec.id.clone(),
+            sequence: rec.sequence.clone(),
+            taxid: None,
+        });
+    }
+    builder.write(&db_base)
+        .map_err(|e| ProkkaError::Blast(format!("Cannot build BlastDb: {}", e)))?;
 
-    // Karlin-Altschul statistics for BLOSUM62 with gap_open=11, gap_extend=1
-    let kbp = match blast_rs::stat::lookup_protein_params(11, 1) {
-        Some(p) => blast_rs::stat::KarlinBlk {
-            lambda: p.lambda,
-            k: p.k,
-            log_k: p.k.ln(),
-            h: p.h,
-        },
-        None => blast_rs::stat::protein_ungapped_kbp(),
-    };
+    // Open the indexed database
+    let blast_db = blast_rs::BlastDb::open(&db_base)
+        .map_err(|e| ProkkaError::Blast(format!("Cannot open BlastDb: {}", e)))?;
 
-    let matrix = &blast_rs::matrix::BLOSUM62;
+    // Configure search parameters
+    let mut params = blast_rs::SearchParams::blastp();
+    params.evalue_threshold = evalue_threshold;
 
     let mut num_annotated = 0;
 
-    // First pass: collect unannotated CDS info (to avoid borrow conflicts)
     for contig in contigs.iter_mut() {
-        // Collect indices and protein translations of unannotated CDS
+        // Collect unannotated CDS proteins (to avoid borrow conflicts)
         let mut cds_data: Vec<(usize, Vec<u8>)> = Vec::new();
 
         for (fi, feature) in contig.features.iter().enumerate() {
@@ -90,66 +85,30 @@ pub fn annotate_blast(
             cds_data.push((fi, protein));
         }
 
-        // Second pass: search and annotate
+        // Search each protein against indexed database
         for (fi, protein) in cds_data {
-            let query_encoded: Vec<u8> = protein
-                .iter()
-                .map(|&b| blast_rs::input::aminoacid_to_ncbistdaa(b))
-                .collect();
+            let results = blast_rs::api::blastp(&blast_db, &protein, &params);
 
-            let len_adj = blast_rs::stat::compute_length_adjustment(
-                query_encoded.len() as i32,
-                db_total_len,
-                num_db_seqs,
-                &kbp,
-            );
-            let search_space = blast_rs::stat::compute_search_space(
-                query_encoded.len() as i64,
-                db_total_len,
-                num_db_seqs,
-                len_adj,
-            );
+            // Find best hit passing coverage threshold
+            let best = results.iter().find(|r| {
+                r.hsps.iter().any(|hsp| {
+                    let query_cov = (hsp.alignment_length as f64 / protein.len() as f64) * 100.0;
+                    hsp.evalue <= evalue_threshold && query_cov >= coverage_threshold
+                })
+            });
 
-            let mut best_hit: Option<(f64, String, String)> = None;
-
-            for (subj_id, subj_desc, subj_encoded) in &encoded_subjects {
-                let hits = blast_rs::protein_lookup::protein_gapped_scan(
-                    &query_encoded,
-                    subj_encoded,
-                    matrix,
-                    3,    // word_size
-                    11.0, // threshold
-                    30,   // ungap_x_dropoff
-                    11,   // gap_open
-                    1,    // gap_extend
-                    50,   // gap_x_dropoff
-                    0,    // ungap_cutoff
-                );
-
-                for hit in hits {
-                    let query_cov =
-                        (hit.align_length as f64 / query_encoded.len() as f64) * 100.0;
-                    if query_cov < coverage_threshold {
-                        continue;
-                    }
-
-                    let eval = kbp.raw_to_evalue(hit.score, search_space);
-                    if eval > evalue_threshold {
-                        continue;
-                    }
-
-                    if best_hit.is_none() || eval < best_hit.as_ref().unwrap().0 {
-                        best_hit = Some((eval, subj_id.clone(), subj_desc.clone()));
-                    }
-                }
-            }
-
-            // Apply best hit annotation
-            if let Some((_eval, hit_id, hit_desc)) = best_hit {
-                let ann = parse_annotation_header(&hit_desc);
+            if let Some(hit) = best {
+                // blast-rs subject_title may have binary header prefix bytes.
+                // Strip non-ASCII-printable prefix and parse the defline.
+                let clean_title = clean_blast_title(&hit.subject_title);
+                let ann = parse_annotation_header(&clean_title);
 
                 let product = if ann.product.is_empty() {
-                    hit_desc.clone()
+                    if hit.subject_title.contains("~~~") {
+                        crate::postprocess::product::HYPO.to_string()
+                    } else {
+                        hit.subject_title.clone()
+                    }
                 } else {
                     ann.product
                 };
@@ -166,9 +125,10 @@ pub fn annotate_blast(
                     feature.add_tag("db_xref", &format!("COG:{}", ann.cog));
                 }
                 if !db.source_prefix.is_empty() {
+                    let accession = hit.subject_accession.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
                     feature.add_tag(
                         "inference",
-                        &format!("{}{}", db.source_prefix, hit_id),
+                        &format!("{}{}", db.source_prefix, accession),
                     );
                 }
 
@@ -178,6 +138,39 @@ pub fn annotate_blast(
     }
 
     Ok(num_annotated)
+}
+
+/// Clean blast-rs subject_title which may have binary header prefix bytes.
+///
+/// The .phr format stores headers with ASN.1 encoding. blast-rs returns
+/// raw bytes as a string, so we strip any leading non-printable or non-ASCII
+/// characters to get the clean defline.
+/// Clean blast-rs subject_title to extract the Prokka defline.
+///
+/// blast-rs returns raw .phr header bytes as a string, which may include
+/// binary ASN.1 prefix and a duplicate accession. The original FASTA
+/// defline format is: `>ACCESSION EC~~~gene~~~product~~~COG`
+///
+/// We need to extract just: `EC~~~gene~~~product~~~COG`
+fn clean_blast_title(raw: &str) -> String {
+    // Find the ~~~-delimited part. The raw title may be:
+    //   "<binary>ACCESSION ACCESSION EC~~~gene~~~product~~~COG"
+    // or for entries with empty EC:
+    //   "<binary>ACCESSION ACCESSION ~~~gene~~~product~~~COG"
+    if let Some(tilde_pos) = raw.find("~~~") {
+        // Walk backwards from first ~~~ to find the space before the EC/~~~ field.
+        // The EC field (or empty) is between the last space before ~~~ and ~~~.
+        let before_tilde = &raw[..tilde_pos];
+        if let Some(space_pos) = before_tilde.rfind(' ') {
+            // Everything from after that space: "EC~~~gene~~~product~~~COG"
+            return raw[space_pos + 1..].to_string();
+        }
+        // No space found — the whole thing starts with EC~~~
+        return raw.to_string();
+    }
+    // No ~~~ — return as-is after stripping non-printable prefix
+    let start = raw.find(|c: char| c.is_ascii_graphic()).unwrap_or(0);
+    raw[start..].to_string()
 }
 
 /// Translate a DNA sequence to protein using the given genetic code.

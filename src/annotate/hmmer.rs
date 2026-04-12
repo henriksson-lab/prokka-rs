@@ -137,7 +137,11 @@ pub fn annotate_hmmer(
             let ann = parse_annotation_header(&hit.hmm_desc);
 
             let product = if ann.product.is_empty() {
-                hit.hmm_desc.clone()
+                if hit.hmm_desc.contains("~~~") {
+                    crate::postprocess::product::HYPO.to_string()
+                } else {
+                    hit.hmm_desc.clone()
+                }
             } else {
                 ann.product
             };

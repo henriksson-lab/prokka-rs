@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
 use regex::Regex;
 
@@ -6,6 +7,41 @@ use regex::Regex;
 pub const HYPO: &str = "hypothetical protein";
 /// The product name for --noanno mode.
 pub const UNANN: &str = "unannotated protein";
+
+// Pre-compiled regexes for cleanup_product (compiled once, used many times).
+static RE_HYPO: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)DUF\d|UPF\d|conserved|domain of unknown|\b[CN].term|paralog").unwrap()
+});
+static RE_HOMOLOG: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\bhomolog( \d)?\b").unwrap()
+});
+static RE_ARCOG: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^arCOG\d+\s+").unwrap()
+});
+static RE_EC_COG: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\((EC|COG).*?\)").unwrap()
+});
+static RE_IS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\bIS\d+\b").unwrap()
+});
+static RE_LOCUS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\s+\w+\d{4,}c?").unwrap()
+});
+static RE_AND: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r" and (inactivated|related) \w+").unwrap()
+});
+static RE_FAMILY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r",\s*family$").unwrap()
+});
+static RE_PUTATIVE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^(potential|possible|probable|predicted|uncharacteri.ed)").unwrap()
+});
+static RE_SUFFIX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(domain|family|binding|fold|like|motif|repeat)\s*$").unwrap()
+});
+static RE_SPACE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\s+").unwrap()
+});
 
 /// Clean up a /product annotation to be Genbank/ENA compliant.
 ///
@@ -16,61 +52,34 @@ pub fn cleanup_product(product: &str, good_products: &HashSet<String>) -> String
         return product.to_string();
     }
 
-    let p = product.to_string();
-
-    // Return HYPO if matches specific patterns
-    let hypo_re = Regex::new(r"(?i)DUF\d|UPF\d|conserved|domain of unknown|\b[CN].term|paralog").unwrap();
-    if hypo_re.is_match(&p) {
+    if RE_HYPO.is_match(product) {
         return HYPO.to_string();
     }
 
     // Return HYPO if no lowercase letters at all
-    if !p.chars().any(|c| c.is_ascii_lowercase()) {
+    if !product.chars().any(|c| c.is_ascii_lowercase()) {
         return HYPO.to_string();
     }
 
-    let mut p = p;
+    let mut p = product.to_string();
 
-    // Remove "homolog" (with optional " N")
-    let homolog_re = Regex::new(r"\bhomolog( \d)?\b").unwrap();
-    p = homolog_re.replace_all(&p, "").to_string();
+    p = RE_HOMOLOG.replace_all(&p, "").to_string();
+    p = RE_ARCOG.replace(&p, "").to_string();
+    p = RE_EC_COG.replace_all(&p, "").to_string();
 
-    // Remove arCOG prefix
-    let arcog_re = Regex::new(r"^arCOG\d+\s+").unwrap();
-    p = arcog_re.replace(&p, "").to_string();
-
-    // Remove (EC...) and (COG...)
-    let ec_cog_re = Regex::new(r"\((EC|COG).*?\)").unwrap();
-    p = ec_cog_re.replace_all(&p, "").to_string();
-
-    // Remove possible locus tags (word+4+ digits), but not IS names
-    let is_re = Regex::new(r"\bIS\d+\b").unwrap();
-    if !is_re.is_match(&p) {
-        let locus_re = Regex::new(r"\s+\w+\d{4,}c?").unwrap();
-        p = locus_re.replace_all(&p, "").to_string();
+    if !RE_IS.is_match(&p) {
+        p = RE_LOCUS.replace_all(&p, "").to_string();
     }
 
-    // Remove "and (inactivated|related) word"
-    let and_re = Regex::new(r" and (inactivated|related) \w+").unwrap();
-    p = and_re.replace_all(&p, "").to_string();
+    p = RE_AND.replace_all(&p, "").to_string();
+    p = RE_FAMILY.replace(&p, "").to_string();
+    p = RE_PUTATIVE.replace(&p, "putative").to_string();
 
-    // Remove trailing ", family"
-    let family_re = Regex::new(r",\s*family$").unwrap();
-    p = family_re.replace(&p, "").to_string();
-
-    // Replace potential/possible/probable/predicted/uncharacterized with "putative"
-    let putative_re = Regex::new(r"(?i)^(potential|possible|probable|predicted|uncharacteri.ed)").unwrap();
-    p = putative_re.replace(&p, "putative").to_string();
-
-    // If ends with domain/family/binding/fold/like/motif/repeat, append " protein"
-    let suffix_re = Regex::new(r"(?i)(domain|family|binding|fold|like|motif|repeat)\s*$").unwrap();
-    if suffix_re.is_match(&p) && !p.contains(',') {
+    if RE_SUFFIX.is_match(&p) && !p.contains(',') {
         p.push_str(" protein");
     }
 
-    // Collapse multiple spaces
-    let space_re = Regex::new(r"\s+").unwrap();
-    p = space_re.replace_all(&p, " ").to_string();
+    p = RE_SPACE.replace_all(&p, " ").to_string();
 
     p.trim().to_string()
 }

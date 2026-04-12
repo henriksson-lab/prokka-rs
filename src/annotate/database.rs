@@ -52,11 +52,10 @@ pub fn parse_annotation_header(desc: &str) -> ParsedAnnotation {
 
 /// Collapse transitionary EC numbers: replace `n\d+` with `-`.
 fn collapse_ec(ec: &str) -> String {
-    let mut result = ec.to_string();
-    // Replace patterns like n1, n2, etc. with -
-    let re = regex::Regex::new(r"n\d+").unwrap();
-    result = re.replace_all(&result, "-").to_string();
-    result
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"n\d+").unwrap()
+    });
+    RE.replace_all(ec, "-").to_string()
 }
 
 #[cfg(test)]

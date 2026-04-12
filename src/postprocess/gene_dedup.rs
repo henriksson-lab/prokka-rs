@@ -45,6 +45,9 @@ pub fn deduplicate_genes(contigs: &mut [Contig]) {
             continue;
         }
         for (n, &(ci, fi)) in locs.iter().enumerate() {
+            if ci >= contigs.len() || fi >= contigs[ci].features.len() {
+                continue;
+            }
             let feature = &mut contigs[ci].features[fi];
             feature.remove_tag("gene");
             feature.add_tag("gene", &format!("{}_{}", gene, n + 1));
