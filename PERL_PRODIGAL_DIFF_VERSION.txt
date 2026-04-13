@@ -1,0 +1,28 @@
+Perl Prokka (v1.15.6) uses Prodigal v2.6 via conda (bioconda::prokka).
+prokka-rs uses prodigal-rs v0.2, which is a Rust port of Prodigal v2.6.3.
+
+prodigal-rs produces identical gene coordinates to the C Prodigal v2.6.3
+binary. This was verified on the prokka test plasmid (E. faecium AUS0004_p1,
+56520 bp): all 63 genes match exactly between prodigal-rs and C Prodigal.
+
+However, Prodigal v2.6 (used by Perl Prokka via conda) produces slightly
+different start positions for some genes compared to v2.6.3. For example
+on the test plasmid:
+
+  Gene  Prodigal v2.6 (Perl)  Prodigal v2.6.3 / prodigal-rs
+  4     3117..3458             3099..3458
+  9     6187..6858             6145..6858
+  11    8933..9685             8933..9652
+
+These are start-codon selection differences between Prodigal versions, not
+bugs in prodigal-rs. The different start positions produce different protein
+sequences, which can cause BLAST to miss annotations that Perl Prokka finds
+(or find annotations that Perl misses).
+
+On the test plasmid, Perl Prokka annotates 10 CDS while prokka-rs annotates
+7. The 3 missing annotations (srtA, topB, umuC) are due to the different
+CDS boundaries producing proteins that fall below the BLAST e-value threshold
+against the sprot database.
+
+This is not fixable in prokka-rs without downgrading to the older Prodigal
+algorithm. The v2.6.3 predictions are considered more accurate.

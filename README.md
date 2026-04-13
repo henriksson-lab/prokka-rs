@@ -97,39 +97,32 @@ for contig in &result.contigs {
 
 ## Benchmarks
 
-Compared against Prokka 1.15.6 (Perl) on Linux x86_64 (single-threaded, `--cpus 1`).
+Compared against Prokka 1.15.6 (Perl) on Linux x86_64.
 Rust binary compiled with `RUSTFLAGS="-C target-cpu=native" cargo build --release`.
 
-### CDS prediction only (`--noanno`)
+### CDS prediction only (`--noanno`, 1 CPU)
 
 | Input | Perl Prokka | prokka-rs | Speedup | CDS found |
 |-------|------------|-----------|---------|-----------|
-| plasmid.fna (57 KB) | 4.6s | 0.7s | **6.6x** | 63 (both) |
-| genome.fna (6.7 MB) | 58.7s | 39.7s | **1.5x** | identical |
+| plasmid.fna (57 KB) | 3.6s | 0.35s | **10x** | 63 (both) |
+| genome.fna (6.7 MB) | 41.3s | 15.9s | **2.6x** | 6048 vs 6059 |
 
-Both tools find the same number of CDS. prokka-rs uses prodigal-rs natively
-(no subprocess overhead), which accounts for most of the speedup on small inputs.
+prokka-rs uses prodigal-rs natively (no subprocess, no BioPerl overhead).
 
-### With BLAST annotation (`--fast`, 1 CPU)
+### With BLAST annotation (`--fast`)
 
-| Input | Perl Prokka | prokka-rs | Annotations found |
-|-------|------------|-----------|-------------------|
-| plasmid.fna (57 KB) | 16.1s | 2m 6s | Perl: 10, Rust: 7 |
-| genome.fna (6.7 MB) | 20m 8s | TBD | |
+| Input | CPUs | Perl Prokka | prokka-rs | Speedup | Annotations |
+|-------|------|------------|-----------|---------|-------------|
+| plasmid.fna (57 KB) | 1 | 12.8s | 13.8s | 0.9x | 10 vs 11 |
+| plasmid.fna (57 KB) | 8 | 7.5s | **2.7s** | **2.8x** | 10 vs 11 |
 
-blast-rs uses an indexed protein database (built at runtime) for searching.
-Still ~8x slower than NCBI BLAST+ per query, but functional. The 3 missing
-annotations are due to prodigal-rs gene boundary differences producing
-slightly different protein sequences.
+blast-rs uses the NCBI BLAST+ two-hit algorithm with thick backbone lookup
+tables and rolling hash. Per-query speed is ~1.7x NCBI on small queries.
+With 8 CPUs, queries are parallelized across threads via rayon.
 
-### With BLAST annotation (`--fast`, 8 CPUs)
-
-| Input | Perl Prokka |
-|-------|------------|
-| plasmid.fna (57 KB) | 8.8s |
-
-prokka-rs does not yet parallelize BLAST searches across CPUs.
-This is planned using rayon.
+prokka-rs finds 1 extra annotation because blast-rs doesn't yet implement
+NCBI's composition-based statistics adjustment (comp_based_stats mode 2).
+This causes one false positive that NCBI would filter. See TODO.md.
 
 ## Command Line Options
 

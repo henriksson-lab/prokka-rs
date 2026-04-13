@@ -371,6 +371,17 @@ pub fn annotate(
             .filter(|f| f.feature_type == crate::model::FeatureType::CDS)
             .count();
 
+        // Create one shared thread pool for all BLAST searches
+        let num_threads = if config.cpus == 0 { rayon::current_num_threads() } else { config.cpus as usize };
+        let blast_pool = if num_threads > 1 {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(num_threads)
+                .build()
+                .ok()
+        } else {
+            None
+        };
+
         for db in &databases {
             // Skip HMMs in --fast mode
             if config.fast && db.format == crate::annotate::database::DbFormat::Hmmer3 {
@@ -396,7 +407,7 @@ pub fn annotate(
             let annotated = match db.format {
                 crate::annotate::database::DbFormat::Blast => {
                     log.push(format!("Will use BLAST to search against {}", db.path));
-                    crate::annotate::blast::annotate_blast(&mut contigs, db, config)?
+                    crate::annotate::blast::annotate_blast(&mut contigs, db, config, blast_pool.as_ref())?
                 }
                 crate::annotate::database::DbFormat::Hmmer3 => {
                     log.push(format!("Will use HMMER to search against {}", db.path));
