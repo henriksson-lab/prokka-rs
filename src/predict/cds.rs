@@ -1,3 +1,10 @@
+//! CDS (coding sequence) prediction via the native `prodigal-rs` crate.
+//!
+//! Implements pipeline step 6: replaces the Perl call to the `prodigal`
+//! binary (Perl Prokka lines ~721-786) with an in-process port of
+//! Prodigal v2.6.3. Decides between `single` (trained) and `meta` mode
+//! the same way the Perl pipeline does.
+
 use crate::config::ProkkaConfig;
 use crate::error::ProkkaError;
 use crate::model::{Contig, FeatureType, SeqFeature, Strand};
@@ -92,7 +99,11 @@ pub fn predict_cds(
     Ok(all_features)
 }
 
-/// Convert a prodigal-rs PredictedGene to our SeqFeature.
+/// Convert a `prodigal_rs::PredictedGene` into a Prokka [`SeqFeature`].
+///
+/// Sets `feature.source` to `Prodigal:prodigal-rs-<crate-version>` and
+/// adds the standard `inference=ab initio prediction:<source>` tag, mirroring
+/// the source-tag format used by Perl Prokka.
 fn prodigal_gene_to_feature(
     gene: prodigal_rs::PredictedGene,
     seq_id: &str,
@@ -120,8 +131,12 @@ fn prodigal_gene_to_feature(
     feature
 }
 
-/// Determine the Prodigal mode based on config and total bp.
-/// Returns true for single mode, false for meta mode.
+/// Decide whether Prodigal should run in `single` (trained) or `meta` mode.
+///
+/// Matches Perl Prokka line 727:
+/// `single` if a user training file is supplied, or if total bp >= 100 000
+/// and `--metagenome` was not set; otherwise `meta`. Returns `true` for
+/// single mode and `false` for meta mode.
 pub fn select_mode(config: &ProkkaConfig, total_bp: usize) -> bool {
     config.prodigaltf.is_some() || (total_bp >= 100_000 && !config.metagenome)
 }

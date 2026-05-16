@@ -1,3 +1,5 @@
+//! Implementation of `--cleandb`: remove generated database index sidecars.
+
 use std::path::Path;
 
 use crate::error::ProkkaError;
@@ -17,6 +19,12 @@ pub fn clean_db(dbdir: &Path) -> Result<(), ProkkaError> {
     Ok(())
 }
 
+/// Remove every file under `dbdir/subdir` whose extension appears in
+/// `extensions`.
+///
+/// If `subdir` contains a `*`, the portion before the first `*` is treated
+/// as a parent directory and every immediate subdirectory of it is swept
+/// (so `"kingdom/*/"` walks each per-kingdom directory).
 fn remove_glob(dbdir: &Path, subdir: &str, extensions: &[&str]) {
     // Handle wildcard in subdir (e.g. "kingdom/*/")
     if subdir.contains('*') {
@@ -35,6 +43,9 @@ fn remove_glob(dbdir: &Path, subdir: &str, extensions: &[&str]) {
     }
 }
 
+/// Delete every regular file in `dir` whose extension matches one of
+/// `extensions`. Missing directories and per-file removal errors are
+/// silently ignored, matching Perl Prokka's `delfile(<glob>)` semantics.
 fn remove_index_files(dir: &Path, extensions: &[&str]) {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {

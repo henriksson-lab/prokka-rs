@@ -1,7 +1,18 @@
+//! `prokka-rs` CLI binary.
+//!
+//! Thin wrapper around [`prokka_rs::pipeline::run`]. The CLI mirrors the
+//! Perl `prokka` script's flags (see `sub setOptions` / `sub usage` in
+//! `prokka/bin/prokka` around lines 1734 and 1805). A few informational
+//! flags (`--citation`, `--depends`, `--listdb`, `--setupdb`, `--cleandb`)
+//! short-circuit before the pipeline runs.
+
 use std::path::PathBuf;
 use clap::Parser;
 
 /// Rapid prokaryotic genome annotation.
+///
+/// One field per Perl `prokka` CLI flag. Translated to a
+/// [`prokka_rs::ProkkaConfig`] by [`Cli::to_config`].
 #[derive(Parser, Debug)]
 #[command(name = "prokka-rs", version = env!("CARGO_PKG_VERSION"), about)]
 struct Cli {
@@ -154,6 +165,10 @@ struct Cli {
 }
 
 impl Cli {
+    /// Translate parsed CLI flags into a [`prokka_rs::ProkkaConfig`].
+    ///
+    /// `--dbdir` falls back to the `PROKKA_DBDIR` environment variable, then
+    /// to `./db`, mirroring Perl Prokka line 241.
     fn to_config(&self) -> Result<prokka_rs::ProkkaConfig, prokka_rs::ProkkaError> {
         let kingdom = prokka_rs::config::Kingdom::parse(&self.kingdom)?;
         let default_dbdir = std::path::PathBuf::from(
@@ -206,6 +221,12 @@ impl Cli {
     }
 }
 
+/// CLI entry point.
+///
+/// Parses arguments, handles the informational/setup flags (`--citation`,
+/// `--depends`, `--listdb`, `--setupdb`, `--cleandb`) inline, and otherwise
+/// hands off to [`prokka_rs::pipeline::run`]. Exits with status 2 on any
+/// error, matching Perl Prokka's `sub err` (line 1557).
 fn main() {
     let cli = Cli::parse();
 

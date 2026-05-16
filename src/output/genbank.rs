@@ -1,3 +1,14 @@
+//! GenBank / Sequin file generation.
+//!
+//! Mirrors Perl Prokka lines 1416-1437: run NCBI's `tbl2asn` on the
+//! freshly-written `.fsa` and `.tbl` files to produce `.gbk` and `.sqn`,
+//! then patch the `COORDINATES: profile` spacing quirk in tbl2asn's output.
+//!
+//! If `tbl2asn` is not on `$PATH`, [`generate_genbank`] falls back to a
+//! minimal in-house GenBank flat-file writer ([`write_basic_genbank`]) that
+//! reads the already-emitted `.fsa` and `.tbl` so the rest of the pipeline
+//! still produces a usable `.gbk`.
+
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
@@ -6,7 +17,7 @@ use crate::config::ProkkaConfig;
 use crate::error::ProkkaError;
 
 
-/// Generate GenBank (.gbk) and Sequin (.sqn) files.
+/// Generate GenBank (`.gbk`) and Sequin (`.sqn`) files.
 ///
 /// Currently uses tbl2asn as an external process (same approach as Perl Prokka).
 /// Requires .fsa and .tbl files to already exist in the output directory.
@@ -87,7 +98,12 @@ pub fn generate_genbank(
     Ok(())
 }
 
-/// Write a basic GenBank flat file when tbl2asn is not available.
+/// Write a minimal GenBank flat file when `tbl2asn` is not installed.
+///
+/// Reads the already-written `.fsa` (for sequences) and `.tbl` (for feature
+/// coordinates and qualifiers) and emits a `LOCUS`/`DEFINITION`/`FEATURES`/`ORIGIN`
+/// flat file. This is intentionally lossy compared to the real tbl2asn
+/// output but is enough for downstream viewers.
 fn write_basic_genbank(
     writer: &mut impl Write,
     outdir: &Path,
@@ -237,7 +253,10 @@ fn write_basic_genbank(
     Ok(())
 }
 
-/// Count FASTA records in a file.
+/// Count FASTA records (`>` headers) in `path`.
+///
+/// Used to pick the right `tbl2asn -M` flag: `b` for assemblies with more
+/// than 10 000 contigs, `n` otherwise (per Perl Prokka issue 93, line 1422).
 fn count_fasta_records(path: &Path) -> usize {
     std::fs::read_to_string(path)
         .map(|s| s.lines().filter(|l| l.starts_with('>')).count())

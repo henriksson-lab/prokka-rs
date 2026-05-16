@@ -1,3 +1,10 @@
+//! CRISPR repeat detection via the external `minced` tool.
+//!
+//! Implements pipeline step 5. CRISPRs are emitted as `repeat_region`
+//! features and (in the parent pipeline) included alongside RNAs in the
+//! CDS overlap-filter input, because Prodigal will occasionally call ORFs
+//! inside CRISPR arrays.
+
 use std::path::Path;
 use std::process::Command;
 
@@ -29,7 +36,13 @@ pub fn predict_crispr(
     parse_minced_gff(&stdout)
 }
 
-/// Parse minced GFF3 output into SeqFeature list.
+/// Parse minced GFF3 output into a list of `repeat_region` features.
+///
+/// Reads only rows whose feature type is `repeat_region`. The GFF score
+/// column carries the repeat-unit count, which becomes the `note` tag
+/// (`"CRISPR with N repeat units"`), and the `rpt_unit_seq` attribute is
+/// preserved. The Perl pipeline also strips the `ID` and `score` tags
+/// (issue #328); we never add them in the first place.
 pub fn parse_minced_gff(gff_output: &str) -> Result<Vec<SeqFeature>, ProkkaError> {
     let mut features = Vec::new();
 

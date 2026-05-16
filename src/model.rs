@@ -1,3 +1,10 @@
+//! Core data model: contigs, features, strands, and run results.
+//!
+//! These types replace the BioPerl objects used by the original Perl Prokka
+//! (`Bio::Seq`, `Bio::SeqFeature::Generic`, etc.). A pipeline run consumes
+//! [`Contig`]s, produces [`SeqFeature`]s attached to them, and packages
+//! everything plus summary stats into an [`AnnotationResult`].
+
 use indexmap::IndexMap;
 use std::fmt;
 

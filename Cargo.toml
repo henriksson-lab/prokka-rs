@@ -26,7 +26,7 @@ cli = ["dep:clap", "dep:chrono"]
 [dependencies]
 prodigal-rs = "0.2"
 blast-rs = { path = "/data/henriksson/github/claude/newblast" }
-hmmer-pure-rs = { path = "/home/mahogny/github/claude/hmmer-pure-rs" }
+hmmer-pure-rs = { path = "/home/mahogny/github/claude/newhmmer" }
 clap = { version = "4", features = ["derive"], optional = true }
 chrono = { version = "0.4", optional = true }
 md5 = "0.8"

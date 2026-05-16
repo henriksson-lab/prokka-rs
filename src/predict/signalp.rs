@@ -1,3 +1,11 @@
+//! Signal-peptide detection via the external `signalp` tool.
+//!
+//! Runs after CDS prediction and translation (Perl Prokka lines 801-938).
+//! Only Bacteria are considered, and only when the user supplies `--gram`.
+//! Supports SignalP v3, v4 and v5 output formats; cleavage positions are
+//! converted from protein residues back to DNA coordinates and emitted as
+//! `sig_peptide` features.
+
 use std::io::Write as IoWrite;
 use std::path::Path;
 use std::process::Command;
@@ -6,6 +14,9 @@ use crate::config::ProkkaConfig;
 use crate::error::ProkkaError;
 use crate::model::{Contig, FeatureType, SeqFeature, Strand};
 
+/// Upper bound on the number of CDS sent to SignalP in a single run.
+/// SignalP gets unhappy with very large inputs, so we skip it past this
+/// threshold (matches the `$SIGNALP_MAXSEQ` constant in Perl Prokka).
 const SIGNALP_MAXSEQ: usize = 10_000;
 
 /// Detect signal peptides using SignalP (external process).
@@ -131,6 +142,10 @@ pub fn predict_signalp(
     Ok(features)
 }
 
+/// Probe the local `signalp` binary and return its major version (3, 4 or 5).
+///
+/// Returns `0` when no usable `signalp` is found on `$PATH` so the caller
+/// can silently skip the step (signal-peptide prediction is optional).
 fn detect_signalp_version() -> Result<u8, ProkkaError> {
     // Try `signalp -version` first (v5), then `signalp -v` (v3/v4)
     if let Ok(out) = Command::new("signalp").arg("-version").output() {
@@ -152,6 +167,12 @@ fn detect_signalp_version() -> Result<u8, ProkkaError> {
     Ok(0) // Not found
 }
 
+/// Invoke `signalp` with the correct argument shape for `ver` and return
+/// its captured short-format output as a string.
+///
+/// v3/v4 stream results on stdout; v5 writes a `signalp_summary.signalp5`
+/// file inside `outdir` which is read back and deleted. Maps directly to
+/// the `$opts` branch table in Perl Prokka line 829.
 fn run_signalp(ver: u8, gram: &str, faa_path: &Path, outdir: &Path) -> Result<String, ProkkaError> {
     match ver {
         3 => {
@@ -193,7 +214,11 @@ fn run_signalp(ver: u8, gram: &str, faa_path: &Path, outdir: &Path) -> Result<St
     }
 }
 
-/// Parse SignalP v3 short output. Returns (cds_index, cleavage_pos, note).
+/// Parse one row of SignalP v3 short-format output.
+///
+/// Returns `(cds_index, cleavage_residue, note)` only when the row has
+/// 7 whitespace-separated fields and field 6 is `Y` (signal peptide
+/// predicted), matching Perl Prokka line 843.
 fn parse_signalp_v3(fields: &[&str]) -> Option<(usize, usize, String)> {
     if fields.len() != 7 || fields[6] != "Y" {
         return None;
@@ -204,7 +229,10 @@ fn parse_signalp_v3(fields: &[&str]) -> Option<(usize, usize, String)> {
     Some((idx, cleave, format!("predicted cleavage at residue {} with probability {}", fields[3], prob)))
 }
 
-/// Parse SignalP v4 short output.
+/// Parse one row of SignalP v4 short-format output.
+///
+/// Returns `(cds_index, cleavage_residue, note)` only when there are
+/// exactly 12 fields and field 9 is `Y`, matching Perl Prokka line 870.
 fn parse_signalp_v4(fields: &[&str]) -> Option<(usize, usize, String)> {
     if fields.len() != 12 || fields[9] != "Y" {
         return None;
@@ -214,7 +242,13 @@ fn parse_signalp_v4(fields: &[&str]) -> Option<(usize, usize, String)> {
     Some((idx, cleave, format!("predicted cleavage at residue {}", fields[2])))
 }
 
-/// Parse SignalP v5 short output.
+/// Parse one row of SignalP v5 short-format output.
+///
+/// Accepts rows tagged `SP`, `TAT` or `LIPO` (Sec/SPI, Tat or lipoprotein
+/// signal-peptide classes). The probability picked for the note comes
+/// from the column matching the predicted class, and the cleavage
+/// position is read from the `pos1-pos2.` field. Mirrors the v5 branch
+/// in Perl Prokka lines 895-903.
 fn parse_signalp_v5(fields: &[&str]) -> Option<(usize, usize, String)> {
     if fields.len() != 12 {
         return None;

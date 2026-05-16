@@ -1,11 +1,21 @@
+//! Implementation of `--listdb`: report which kingdom, genus, HMM and CM
+//! databases are installed under `$dbdir`.
+
 use std::path::Path;
 
-/// Inventory of available databases.
+/// Inventory of databases discovered under a Prokka `$dbdir`.
+///
+/// Populated by [`list_db`]; mirrors the four lists printed by Perl
+/// Prokka's `list_db()` (kingdoms, genera, HMMs, CMs).
 #[derive(Debug, Default)]
 pub struct DbInventory {
+    /// Kingdom names with a usable `kingdom/<name>/sprot` BLAST DB.
     pub kingdoms: Vec<String>,
+    /// Genus-specific BLAST databases under `genus/`.
     pub genera: Vec<String>,
+    /// HMM database basenames under `hmm/`.
     pub hmms: Vec<String>,
+    /// Infernal covariance model basenames under `cm/`.
     pub cms: Vec<String>,
 }
 

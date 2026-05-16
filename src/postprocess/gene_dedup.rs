@@ -1,11 +1,20 @@
+//! Resolve colliding `/gene` qualifiers across all CDS features.
+//!
+//! Runs before locus-tag assignment so that the sister `gene` features
+//! created with `--addgenes` get the de-duplicated names. Mirrors Perl
+//! Prokka lines 1197-1226 ("Fix colliding /gene names in CDS").
+
 use std::collections::HashMap;
 
 use crate::model::Contig;
 
-/// De-duplicate colliding /gene names across all contigs.
+/// De-duplicate colliding `/gene` qualifiers across all CDS features.
 ///
-/// Groups CDS features by gene name (stripping existing `_N` suffix),
-/// and renames duplicates as `gene_1`, `gene_2`, etc.
+/// Groups every CDS by its gene base name — stripping any existing
+/// `_<digits>` suffix so that `abc_1` and `abc_2` count as the same gene —
+/// and, for any group of size > 1, rewrites the qualifiers to `gene_1`,
+/// `gene_2`, ... in the order the features were encountered. CDS features
+/// with no `/gene` tag and all non-CDS feature types are left untouched.
 ///
 /// Replicates Perl Prokka lines 1201-1226.
 pub fn deduplicate_genes(contigs: &mut [Contig]) {

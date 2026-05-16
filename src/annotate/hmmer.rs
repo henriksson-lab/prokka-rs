@@ -1,10 +1,28 @@
-use std::io::BufReader;
+//! HMMER profile annotation of CDS features.
+//!
+//! Loads HMM profiles from an annotation database and searches them against
+//! the translations of any CDS still missing a `/product` tag, recording the
+//! best (lowest e-value) hit per sequence. Hit descriptions are parsed as
+//! `~~~`-delimited Prokka deflines.
+//!
+//! Replaces Perl Prokka's external `hmmscan` invocation (`$HMMER3CMD` at
+//! line 73 / annotation loop near line 1075).
+
 use std::path::Path;
 
 use crate::annotate::database::{parse_annotation_header, AnnotationDb};
 use crate::config::ProkkaConfig;
 use crate::error::ProkkaError;
 use crate::model::Contig;
+use hmmer_pure_rs::alphabet::Alphabet;
+use hmmer_pure_rs::bg::Bg;
+use hmmer_pure_rs::hmmfile;
+use hmmer_pure_rs::logsum;
+use hmmer_pure_rs::pipeline::Pipeline;
+use hmmer_pure_rs::profile::{self, Profile, P7_LOCAL};
+use hmmer_pure_rs::sequence::Sequence;
+use hmmer_pure_rs::simd::oprofile::OProfile;
+use hmmer_pure_rs::tophits::{TopHits, P7_IS_REPORTED};
 
 /// Annotate unannotated CDS features via HMMER profile search.
 ///
@@ -25,25 +43,19 @@ pub fn annotate_hmmer(
     let evalue_threshold = db.evalue.unwrap_or(config.evalue);
     let gcode = config.effective_gcode();
 
-    // Load HMMs — try pressed format first, then ASCII
-    let h3m_path = format!("{}.h3m", db.path);
-    let hmms = if Path::new(&h3m_path).exists() {
-        hmmer::io::binary::read_all_pressed(&h3m_path)
-            .map_err(|e| ProkkaError::Hmmer(format!("Failed to read pressed HMMs: {}", e)))?
-    } else {
-        let file = std::fs::File::open(db_path)
-            .map_err(|e| ProkkaError::Hmmer(format!("Cannot open HMM file: {}", e)))?;
-        let mut reader = BufReader::new(file);
-        hmmer::io::hmm_file::read_all_hmms(&mut reader)
-            .map_err(|e| ProkkaError::Hmmer(format!("Failed to read HMMs: {}", e)))?
-    };
+    // newhmmer's public search API reads the source HMM file and builds the
+    // required profiles in-process. Prokka only schedules HMM DBs that have
+    // pressed sidecars, but the ASCII .hmm path remains the source of truth.
+    let hmms = hmmfile::read_hmm_file(db_path)
+        .map_err(|e| ProkkaError::Hmmer(format!("Failed to read HMMs: {}", e)))?;
 
     if hmms.is_empty() {
         return Ok(0);
     }
 
     // Collect unannotated CDS proteins
-    let abc = hmmer::alphabet::Alphabet::amino();
+    let abc = Alphabet::amino();
+    let bg = Bg::new(&abc);
 
     // Build digital sequences for all unannotated CDS
     struct CdsRef {
@@ -68,17 +80,25 @@ pub fn annotate_hmmer(
                 continue;
             }
 
-            let seq_name = format!("cds_{}_{}", ci, fi);
-            match hmmer::alphabet::DigitalSequence::new(&seq_name, "", &protein, &abc) {
-                Ok(dseq) => {
-                    digital_seqs.push(dseq);
-                    cds_refs.push(CdsRef {
-                        contig_idx: ci,
-                        feature_idx: fi,
-                    });
-                }
-                Err(_) => continue,
+            let dsq = abc.digitize(&protein);
+            let n = dsq.len().saturating_sub(2);
+            if n == 0 {
+                continue;
             }
+
+            let seq_name = format!("cds_{}_{}", ci, fi);
+            digital_seqs.push(Sequence {
+                name: seq_name,
+                acc: String::new(),
+                desc: String::new(),
+                dsq,
+                n,
+                l: n,
+            });
+            cds_refs.push(CdsRef {
+                contig_idx: ci,
+                feature_idx: fi,
+            });
         }
     }
 
@@ -86,14 +106,8 @@ pub fn annotate_hmmer(
         return Ok(0);
     }
 
-    // Initialize logsum tables (required once for hmmer-pure-rs)
-    hmmer::core::logsum::flogsum_init();
-
-    let pipeline_config = hmmer::pipeline::PipelineConfig {
-        e_value: evalue_threshold,
-        noali: true,
-        ..hmmer::pipeline::PipelineConfig::default()
-    };
+    logsum::p7_flogsuminit();
+    hmmer_pure_rs::util::simd_env::init();
 
     // For hmmscan semantics: for each HMM, search against all sequences.
     // Track best HMM hit per sequence.
@@ -105,23 +119,59 @@ pub fn annotate_hmmer(
 
     let mut best_hits: Vec<Option<BestHit>> = (0..digital_seqs.len()).map(|_| None).collect();
 
+    let z = hmms.len() as f64;
     for hmm in &hmms {
-        let (hits, _stats) = hmmer::pipeline::hmmsearch(hmm, &digital_seqs, &pipeline_config);
+        let mut local_bg = bg.clone();
+        local_bg.set_filter(hmm.m, &hmm.compo);
 
-        for hit in hits {
-            // Find which sequence this hit corresponds to
-            if let Some(seq_idx) = digital_seqs.iter().position(|s| s.name == hit.name) {
-                let is_better = match &best_hits[seq_idx] {
-                    None => true,
-                    Some(prev) => hit.evalue < prev.evalue,
-                };
-                if is_better {
-                    best_hits[seq_idx] = Some(BestHit {
-                        hmm_name: hmm.name.clone(),
-                        hmm_desc: hmm.desc.clone().unwrap_or_default(),
-                        evalue: hit.evalue,
-                    });
-                }
+        for (seq_idx, seq) in digital_seqs.iter().enumerate() {
+            local_bg.set_length(seq.n);
+
+            let mut gm = Profile::new(hmm.m, &abc);
+            profile::profile_config(hmm, &local_bg, &mut gm, seq.n as i32, P7_LOCAL);
+            let mut om = OProfile::convert(&gm);
+
+            let mut pli = Pipeline::new();
+            pli.e_value_threshold = evalue_threshold;
+            pli.inc_e = evalue_threshold;
+            pli.do_alignment = false;
+            pli.do_alignment_display = false;
+            pli.new_model(&gm);
+
+            let mut th = TopHits::new();
+            if !pli.run(&mut gm, &mut om, &local_bg, hmm, seq, &mut th) {
+                continue;
+            }
+
+            th.threshold(&pli, z, z);
+            let Some(hit) = th
+                .hits
+                .iter()
+                .filter(|hit| hit.flags & P7_IS_REPORTED != 0)
+                .min_by(|a, b| {
+                    let a_eval = z * a.lnp.exp();
+                    let b_eval = z * b.lnp.exp();
+                    a_eval.total_cmp(&b_eval)
+                })
+            else {
+                continue;
+            };
+
+            let evalue = z * hit.lnp.exp();
+            if evalue > evalue_threshold {
+                continue;
+            }
+
+            let is_better = match &best_hits[seq_idx] {
+                None => true,
+                Some(prev) => evalue < prev.evalue,
+            };
+            if is_better {
+                best_hits[seq_idx] = Some(BestHit {
+                    hmm_name: hmm.name.clone(),
+                    hmm_desc: hmm.desc.clone().unwrap_or_default(),
+                    evalue,
+                });
             }
         }
     }

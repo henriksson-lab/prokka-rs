@@ -1,9 +1,21 @@
+//! GFF3 output writer.
+//!
+//! Emits the combined annotation + FASTA `.gff` file that Perl Prokka
+//! produces at lines 1305-1389. The header is `##gff-version N` followed by
+//! `##sequence-region` lines, then one tab-delimited row per feature
+//! (`seqid source type start end score strand phase attributes`), and
+//! finally a `##FASTA` section with the source contigs.
+
 use std::io::Write;
 
 use crate::error::ProkkaError;
 use crate::model::{AnnotationResult, FeatureType};
 
-/// Percent-encode a GFF3 attribute value per the GFF3 specification.
+/// Percent-encode a value for use in the GFF3 attributes column.
+///
+/// Per the GFF3 specification, the following characters must be hex-escaped
+/// inside attribute values: tab, newline, carriage return, `%`, `;`, `=`,
+/// `&`, and `,`. Everything else is passed through verbatim.
 ///
 /// Characters that must be encoded: tab, newline, carriage return,
 /// percent, semicolon, equals, ampersand, comma.
@@ -25,7 +37,14 @@ fn gff3_escape(s: &str) -> String {
     out
 }
 
-/// Write GFF3 output.
+/// Write the full GFF3 annotation file with embedded FASTA section.
+///
+/// Features within each contig are sorted by `(start asc, end desc, has
+/// Parent asc)` — the same comparator the Perl pipeline uses (line 1329) —
+/// so containers come before the things they contain, and the `gene` parent
+/// sorts ahead of its child CDS. Each row also gets an `ID=` (first, by
+/// GFF3 convention) and `Name=` derived from the `/gene` tag, matching the
+/// behaviour at Perl Prokka lines 1334-1336.
 ///
 /// Replicates Perl Prokka lines 1305-1389.
 pub fn write_gff3(

@@ -1,3 +1,14 @@
+//! Protein BLAST annotation of CDS features.
+//!
+//! Translates each unannotated CDS to protein, builds an in-memory
+//! `blast-rs` database from the reference FASTA, and runs `blastp` searches
+//! in parallel via rayon. Hits that pass the e-value and query-coverage
+//! thresholds populate the standard `/product`, `/gene`, `/EC_number`,
+//! `/db_xref` (COG) and `/inference` tags on the matched feature.
+//!
+//! Replaces the external `blastp` pipeline used by Perl Prokka
+//! (`$BLASTPCMD` around line 72 / annotation loop around line 1075).
+
 use std::path::Path;
 
 use crate::annotate::database::{parse_annotation_header, AnnotationDb};
@@ -162,7 +173,12 @@ pub fn annotate_blast(
     Ok(num_annotated)
 }
 
-/// Clean blast-rs subject_title to extract the Prokka defline.
+/// Strip the `blast-rs` `subject_title` prefix so only the Prokka
+/// `~~~`-delimited defline (or bare product) remains.
+///
+/// `blast-rs` may concatenate the subject ID with the description; here we
+/// drop everything before the last whitespace preceding the `~~~` marker
+/// (or trim leading non-printable bytes when no marker is present).
 fn clean_blast_title(raw: &str) -> String {
     if let Some(tilde_pos) = raw.find("~~~") {
         let before_tilde = &raw[..tilde_pos];
@@ -175,7 +191,12 @@ fn clean_blast_title(raw: &str) -> String {
     raw[start..].to_string()
 }
 
-/// Translate a DNA sequence to protein using the given genetic code.
+/// Translate a DNA sequence to protein using the given NCBI genetic code.
+///
+/// Thin convenience wrapper over [`crate::codon_table::translate_dna`]; the
+/// HMMER annotator reuses this so both backends share an identical
+/// translation path (Perl Prokka calls `$f->seq->translate(-codontable_id=>$gcode)`
+/// at line 1098).
 pub fn translate_dna(dna: &[u8], gcode: u8) -> Vec<u8> {
     crate::codon_table::translate_dna(dna, gcode)
 }

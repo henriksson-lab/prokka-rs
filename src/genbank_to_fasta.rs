@@ -1,3 +1,11 @@
+//! GenBank/EMBL → Prokka FASTA conversion for the `--proteins` option.
+//!
+//! Replaces the standalone Perl helper script `prokka-genbank_to_fasta_db`.
+//! Reads a GenBank or EMBL flat file, extracts each CDS's translation along
+//! with `/gene`, `/product`, `/EC_number` and `/locus_tag`, and writes them
+//! out as FASTA records whose description follows Prokka's `~~~`-delimited
+//! convention: `>ID EC~~~gene~~~product~~~COG`.
+
 use std::io::{BufRead, Write};
 use std::path::Path;
 
@@ -295,11 +303,16 @@ ORIGIN
     }
 }
 
+/// Extract a single-line `/key="value"` qualifier value, with the
+/// surrounding quotes removed. Returns `None` if the line does not start
+/// with `prefix`.
 fn extract_qualifier(line: &str, prefix: &str) -> Option<String> {
     line.strip_prefix(prefix)
         .map(|val| val.trim_matches('"').to_string())
 }
 
+/// Write one FASTA record in Prokka's `~~~`-delimited format
+/// (`>id EC~~~gene~~~product~~~COG`), wrapping the protein at 60 columns.
 fn write_protein_entry(
     out: &mut impl Write,
     accession: &str,

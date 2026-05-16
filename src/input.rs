@@ -1,3 +1,11 @@
+//! Input FASTA loading and sanitization.
+//!
+//! Step 1 of the pipeline (Perl `prokka` lines 417-469): read the user's
+//! input FASTA, normalise IDs and sequences, drop contigs below
+//! `--mincontiglen`, optionally rename them for `--centre`/`--compliant`,
+//! and bail out early on duplicate or overly long IDs (NCBI accepts at
+//! most 37 characters).
+
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -7,6 +15,7 @@ use crate::config::ProkkaConfig;
 use crate::error::ProkkaError;
 use crate::model::Contig;
 
+/// Maximum contig ID length accepted by NCBI submission tools.
 const MAX_CONTIG_ID_LEN: usize = 37;
 
 /// Load contigs from a FASTA file, sanitize sequences, and filter by length.
@@ -30,9 +39,27 @@ pub fn load_and_sanitize_fasta(
     let mut current_seq = Vec::new();
     let mut ncontig: usize = 0;
 
-    let contig_prefix = config.locustag.as_deref()
-        .or(config.prefix.as_deref())
-        .unwrap_or("");
+    // Perl prokka:422 — $contigprefix = $locustag || $prefix || $outdir || $strain || ''
+    // (Perl :354 ensures $outdir is set to $prefix earlier, so the chain is
+    //  effectively locustag → prefix → outdir → strain.) Match it verbatim.
+    let outdir_str = config
+        .outdir
+        .as_deref()
+        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty());
+    let strain_str = if config.strain.is_empty() {
+        None
+    } else {
+        Some(config.strain.clone())
+    };
+    let contig_prefix = config
+        .locustag
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| config.prefix.clone().filter(|s| !s.is_empty()))
+        .or(outdir_str)
+        .or(strain_str)
+        .unwrap_or_default();
     let contig_prefix = if contig_prefix.is_empty() {
         String::new()
     } else {

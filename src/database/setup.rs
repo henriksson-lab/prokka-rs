@@ -1,3 +1,10 @@
+//! Implementation of `--setupdb`: build BLAST/HMM/CM indices for every
+//! installed annotation database under `$dbdir`.
+//!
+//! This shells out to the upstream NCBI/HMMER/Infernal tools
+//! (`makeblastdb`, `hmmpress`, `cmpress`) — the same external commands the
+//! Perl `setup_db()` routine drives near line 1643 of `prokka/bin/prokka`.
+
 use std::path::Path;
 use std::process::Command;
 
@@ -84,6 +91,11 @@ pub fn setup_db(dbdir: &Path) -> Result<(), ProkkaError> {
     Ok(())
 }
 
+/// Index a protein FASTA with `makeblastdb -hash_index -dbtype prot`.
+///
+/// Errors map missing executables to [`ProkkaError::ToolNotFound`] and
+/// non-zero exits to [`ProkkaError::ToolFailed`]. Matches the command line
+/// at line 1653 of `prokka/bin/prokka`.
 fn run_makeblastdb(fasta: &Path) -> Result<(), ProkkaError> {
     let status = Command::new("makeblastdb")
         .arg("-hash_index")
@@ -107,6 +119,9 @@ fn run_makeblastdb(fasta: &Path) -> Result<(), ProkkaError> {
     }
 }
 
+/// Run `hmmpress` on an HMM database to build the `.h3{i,f,m,p}` sidecars.
+///
+/// Mirrors the `hmmpress \Q$hmm\E` call at line 1671 of `prokka/bin/prokka`.
 fn run_hmmpress(hmm: &Path) -> Result<(), ProkkaError> {
     let status = Command::new("hmmpress")
         .arg(hmm)
@@ -124,6 +139,10 @@ fn run_hmmpress(hmm: &Path) -> Result<(), ProkkaError> {
     }
 }
 
+/// Run `cmpress` on an Infernal covariance model to build the
+/// `.i1{i,f,m,p}` sidecars.
+///
+/// Mirrors the `cmpress \Q$cm\E` call at line 1677 of `prokka/bin/prokka`.
 fn run_cmpress(cm: &Path) -> Result<(), ProkkaError> {
     let status = Command::new("cmpress")
         .arg(cm)

@@ -1,3 +1,11 @@
+//! tRNA and tmRNA prediction via the external `aragorn` binary.
+//!
+//! Implements pipeline step 2. Aragorn is invoked in linear-topology
+//! batch mode (`-l -w`) with the kingdom-appropriate options; its
+//! free-form text output is parsed into `tRNA` and `tmRNA`
+//! [`SeqFeature`]s. Pseudogenes, inverted intervals and oversized
+//! (>500 bp) calls are dropped, matching Perl Prokka's filters.
+
 use std::path::Path;
 use std::process::Command;
 
@@ -46,7 +54,19 @@ pub fn predict_trna(
     parse_aragorn_output(&stdout, contig_lengths)
 }
 
-/// Parse Aragorn text output into SeqFeature list.
+/// Parse Aragorn's text output into a list of `tRNA`/`tmRNA` features.
+///
+/// Tracks the active contig from `>seqid` headers, then for each
+/// 5-field data row:
+/// - rejects pseudo/wacky calls whose name contains `?`
+/// - extracts coords with the regex `(c)?\[-?(\d+),(\d+)\]`
+///   (the leading `c` marks reverse-complement),
+/// - clamps the interval to `[1, contig_len]` to fix negative or
+///   overflowing coordinates produced in linear mode,
+/// - drops calls with `start > end` or `end - start > 500`.
+/// tmRNA hits are emitted with `product = "transfer-messenger RNA, SsrA"`
+/// and `gene = ssrA`; ordinary tRNAs get a product of
+/// `"<isotype>(<anticodon>)"`.
 pub fn parse_aragorn_output(
     output: &str,
     contig_lengths: &[(String, usize)],

@@ -1,3 +1,9 @@
+//! Ribosomal RNA prediction via Barrnap (default) or RNAmmer (`--rnammer`).
+//!
+//! Implements pipeline step 3. Skipped when `--kingdom Viruses` or
+//! `--norrna` is set. Both backends produce `rRNA` features carrying a
+//! `product` tag derived from the model name.
+
 use std::path::Path;
 use std::process::Command;
 
@@ -54,7 +60,11 @@ pub fn predict_rrna(
     parse_gff3_rrna(&stdout)
 }
 
-/// Parse GFF3 output from Barrnap into SeqFeature list.
+/// Parse Barrnap's GFF3 output into a list of `rRNA` features.
+///
+/// The Perl pipeline removes the GFF `Name` attribute and keeps only
+/// `product`; we read whichever of `product=` or `Name=` is present so
+/// downstream code always has a product label.
 pub fn parse_gff3_rrna(gff_output: &str) -> Result<Vec<SeqFeature>, ProkkaError> {
     let mut features = Vec::new();
 
@@ -162,9 +172,12 @@ fn predict_rrna_rnammer(
     parse_rnammer_xml(&xml_content)
 }
 
-/// Parse RNAmmer XML output into SeqFeature list.
+/// Parse RNAmmer XML output into a list of `rRNA` features.
 ///
-/// XML structure: <rnammer><entries><entry><sequenceEntry>, <mol>, <start>, <stop>, <direction>
+/// Walks each `<entry>` block extracting `sequenceEntry`, `mol`, `start`,
+/// `stop`, `direction`. The `mol` description is rewritten via
+/// `s_r` -> `S ribosomal `, matching Perl Prokka line 585 so labels read
+/// e.g. `23S ribosomal RNA` rather than `23S_rRNA`.
 fn parse_rnammer_xml(xml: &str) -> Result<Vec<SeqFeature>, ProkkaError> {
     let mut features = Vec::new();
 
@@ -215,7 +228,10 @@ fn parse_rnammer_xml(xml: &str) -> Result<Vec<SeqFeature>, ProkkaError> {
     Ok(features)
 }
 
-/// Extract text content of a simple XML tag like <tag>content</tag>.
+/// Extract the trimmed text content of a simple XML element
+/// (`<tag>...</tag>`) from `block`, or `None` if either delimiter is
+/// missing. Used to avoid pulling in a full XML parser for the small,
+/// well-known RNAmmer schema.
 fn extract_xml_tag(block: &str, tag: &str) -> Option<String> {
     let open = format!("<{}>", tag);
     let close = format!("</{}>", tag);

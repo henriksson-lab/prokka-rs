@@ -1,6 +1,18 @@
+//! Runtime configuration for a Prokka annotation run.
+//!
+//! [`ProkkaConfig`] mirrors every CLI flag from Perl Prokka's `setOptions`
+//! (see `prokka/bin/prokka` around line 1734) so the library and the CLI binary
+//! share the same options surface. The [`Kingdom`] enum captures the
+//! `--kingdom` annotation mode and its kingdom-specific defaults (genetic
+//! code, Barrnap mode, Aragorn flags, allowed feature overlaps).
+
 use std::path::PathBuf;
 
-/// Kingdom/annotation mode for Prokka.
+/// Kingdom/annotation mode (`--kingdom`).
+///
+/// Determines the default genetic code, which rRNA tool flags to use, and
+/// whether CDS/RNA overlap is tolerated. Parsed case-insensitively from the
+/// same prefixes Perl Prokka accepts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kingdom {
     Bacteria,
@@ -72,62 +84,111 @@ impl Kingdom {
 
 /// Full configuration for a Prokka annotation run.
 ///
-/// Maps all CLI parameters from the original Perl Prokka.
+/// One field per CLI flag (see `sub setOptions` and `sub usage` in
+/// `prokka/bin/prokka`). Use [`ProkkaConfig::default`] for sensible defaults,
+/// then mutate the fields you care about. [`ProkkaConfig::apply_compliant`]
+/// applies the `--compliant` preset and [`ProkkaConfig::validate`] checks
+/// invariants before the pipeline runs.
 #[derive(Debug, Clone)]
 pub struct ProkkaConfig {
     // General
+    /// `--quiet`: suppress screen output.
     pub quiet: bool,
+    /// `--debug`: keep temporary files for inspection.
     pub debug: bool,
 
     // Setup
+    /// `--dbdir`: Prokka database root folder.
     pub dbdir: PathBuf,
+    /// `--listdb`: list all configured databases and exit.
     pub listdb: bool,
+    /// `--setupdb`: index all installed databases and exit.
     pub setupdb: bool,
+    /// `--cleandb`: remove all database indices and exit.
     pub cleandb: bool,
 
     // Outputs
+    /// `--outdir`: output folder (auto-derived from prefix if `None`).
     pub outdir: Option<PathBuf>,
+    /// `--force`: overwrite an existing output folder.
     pub force: bool,
+    /// `--prefix`: filename prefix for all outputs (auto-derived if `None`).
     pub prefix: Option<String>,
+    /// `--addgenes`: add a `gene` feature for each `CDS` feature.
     pub addgenes: bool,
+    /// `--addmrna`: add an `mRNA` feature for each `CDS` feature.
     pub addmrna: bool,
+    /// `--locustag`: locus tag prefix (MD5-derived if `None`; see
+    /// [`crate::locus_tag::generate_locus_tag`]).
     pub locustag: Option<String>,
+    /// `--increment`: locus tag counter increment.
     pub increment: u32,
+    /// `--gffver`: GFF version to write (2 or 3).
     pub gffver: u8,
+    /// `--compliant`: enforce GenBank/ENA/DDBJ submission rules
+    /// (see [`ProkkaConfig::apply_compliant`]).
     pub compliant: bool,
+    /// `--centre`: sequencing centre ID for compliant contig renaming.
     pub centre: Option<String>,
+    /// `--accver`: accession version to put in the GenBank file.
     pub accver: u32,
 
     // Organism details
+    /// `--genus`: organism genus name.
     pub genus: String,
+    /// `--species`: organism species name.
     pub species: String,
+    /// `--strain`: organism strain name.
     pub strain: String,
+    /// `--plasmid`: plasmid name or identifier.
     pub plasmid: Option<String>,
 
     // Annotations
+    /// `--kingdom`: annotation mode.
     pub kingdom: Kingdom,
+    /// `--gcode`: NCBI translation table (`0` = use kingdom default,
+    /// resolved by [`ProkkaConfig::effective_gcode`]).
     pub gcode: u8,
+    /// `--prodigaltf`: Prodigal training file (overrides built-in model).
     pub prodigaltf: Option<PathBuf>,
+    /// `--gram`: Gram stain (`-`/`neg` or `+`/`pos`); enables SignalP.
     pub gram: Option<String>,
+    /// `--usegenus`: also search the genus-specific BLAST database.
     pub usegenus: bool,
+    /// `--proteins`: extra trusted protein FASTA/GenBank/EMBL searched first.
     pub proteins: Option<PathBuf>,
+    /// `--hmms`: extra trusted HMM profile DB searched first.
     pub hmms: Option<PathBuf>,
+    /// `--metagenome`: improve gene predictions for fragmented genomes
+    /// (Prodigal "meta" mode).
     pub metagenome: bool,
+    /// `--rawproduct`: skip the `/product` cleanup step.
     pub rawproduct: bool,
+    /// `--cdsrnaolap`: allow tRNA/rRNA features to overlap CDS.
     pub cdsrnaolap: bool,
 
     // Matching
+    /// `--evalue`: BLAST/HMMER similarity e-value cut-off.
     pub evalue: f64,
+    /// `--coverage`: minimum percent coverage on query protein.
     pub coverage: f64,
 
     // Computation
+    /// `--cpus`: thread count (`0` = use all cores).
     pub cpus: u32,
+    /// `--fast`: skip HMM databases, BLASTP only.
     pub fast: bool,
+    /// `--noanno`: skip CDS annotation; label all CDS as `unannotated protein`.
     pub noanno: bool,
+    /// `--mincontiglen`: drop contigs shorter than this (NCBI requires 200).
     pub mincontiglen: u32,
+    /// `--rfam`: enable ncRNA search with Infernal/Rfam (slow).
     pub rfam: bool,
+    /// `--norrna`: disable rRNA prediction.
     pub norrna: bool,
+    /// `--notrna`: disable tRNA prediction.
     pub notrna: bool,
+    /// `--rnammer`: prefer RNAmmer over Barrnap for rRNA prediction.
     pub rnammer: bool,
 }
 
@@ -203,7 +264,7 @@ impl ProkkaConfig {
     /// Validate configuration, returning an error if invalid.
     pub fn validate(&self) -> Result<(), crate::error::ProkkaError> {
         let gcode = self.effective_gcode();
-        if !(1..=25).contains(&gcode) || matches!(gcode, 7 | 8 | 17..=20) {
+        if !(1..=25).contains(&gcode) {
             return Err(crate::error::ProkkaError::InvalidGeneticCode(gcode));
         }
         if self.evalue < 0.0 {
@@ -229,7 +290,10 @@ mod tests {
         assert_eq!(Kingdom::parse("arch").unwrap(), Kingdom::Archaea);
         assert_eq!(Kingdom::parse("Viruses").unwrap(), Kingdom::Viruses);
         assert_eq!(Kingdom::parse("vir").unwrap(), Kingdom::Viruses);
-        assert_eq!(Kingdom::parse("Mitochondria").unwrap(), Kingdom::Mitochondria);
+        assert_eq!(
+            Kingdom::parse("Mitochondria").unwrap(),
+            Kingdom::Mitochondria
+        );
         assert_eq!(Kingdom::parse("mito").unwrap(), Kingdom::Mitochondria);
         assert_eq!(Kingdom::parse("mt").unwrap(), Kingdom::Mitochondria);
         assert!(Kingdom::parse("invalid").is_err());

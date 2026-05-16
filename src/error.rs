@@ -1,3 +1,10 @@
+//! Unified error type for the crate.
+//!
+//! Every fallible function in prokka-rs returns `Result<T, ProkkaError>`.
+//! The Perl pipeline uses [`sub err`](../../prokka/bin/prokka) (line 1557),
+//! which simply prints a message and exits — here the variants carry enough
+//! context for callers to act on or render a user-friendly message.
+
 use std::path::PathBuf;
 
 /// All errors that can occur in prokka-rs.

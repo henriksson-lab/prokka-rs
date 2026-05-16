@@ -1,12 +1,21 @@
+//! Plain-text annotation statistics (`.txt`) writer.
+//!
+//! Reproduces the small `prefix.txt` summary file Perl Prokka writes at
+//! lines 1394-1413: a single `organism:` line, contig count, total bases,
+//! and one `<feature_type>: <count>` line for each feature type (sorted
+//! alphabetically by feature type).
+
 use std::io::Write;
 
 use crate::config::ProkkaConfig;
 use crate::error::ProkkaError;
 use crate::model::AnnotationResult;
 
-/// Write annotation statistics text file (.txt).
+/// Write the annotation statistics text file (`.txt`).
 ///
-/// Replicates Perl Prokka lines 1394-1413.
+/// Feature counts are sorted alphabetically by feature-type name to match
+/// Perl Prokka's `sort keys %count` (line 1408). Replicates Perl Prokka
+/// lines 1394-1413.
 pub fn write_txt(
     writer: &mut impl Write,
     result: &AnnotationResult,

@@ -1,8 +1,19 @@
+//! Post-prediction filter that removes CDS overlapping a previously called
+//! RNA or CRISPR feature.
+//!
+//! Mirrors the inline check in Perl Prokka (lines ~759-774): Prodigal will
+//! occasionally call ORFs inside tRNA/rRNA/ncRNA/CRISPR regions, and those
+//! CDS are excluded unless the user passes `--cdsrnaolap` (mitochondrial
+//! genomes are packed, so overlaps are allowed there).
+
 use crate::model::SeqFeature;
 
-/// Remove CDS features that overlap with RNA or CRISPR features.
+/// Drop CDS features that overlap any RNA or CRISPR feature.
 ///
-/// Modifies `cds_features` in place, retaining only non-overlapping CDS.
+/// Operates in place: any CDS whose interval intersects an entry in
+/// `rna_features` (same contig) is removed. When `allow_overlap` is true
+/// (corresponding to Perl Prokka's `--cdsrnaolap` flag), the input is
+/// returned unchanged.
 pub fn filter_overlapping_cds(
     cds_features: &mut Vec<SeqFeature>,
     rna_features: &[SeqFeature],

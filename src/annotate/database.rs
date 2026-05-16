@@ -1,7 +1,18 @@
-/// Format of an annotation database.
+//! Annotation database descriptors and `~~~`-delimited defline parsing.
+//!
+//! Prokka stores its reference protein annotations as FASTA records whose
+//! description line is split into four fields by `~~~`:
+//! `EC_number~~~gene~~~product~~~COG`. Both the BLAST and HMMER annotators
+//! consume these deflines through [`parse_annotation_header`].
+
+/// Search backend used to query an annotation database.
+///
+/// Mirrors the `FMT` field on each entry of Perl Prokka's `@database` list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DbFormat {
+    /// Protein BLAST database (indexed via `makeblastdb`).
     Blast,
+    /// HMMER3 profile database (pressed via `hmmpress`).
     Hmmer3,
 }
 

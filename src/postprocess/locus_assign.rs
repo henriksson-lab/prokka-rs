@@ -1,9 +1,37 @@
+//! Locus-tag, protein-id, and sister-feature assignment.
+//!
+//! Runs after [`gene_dedup`](super::gene_dedup) and immediately before the
+//! output writers. Sorts each contig's features by start position, walks
+//! them in order, and stamps every CDS / tRNA / tmRNA / rRNA / misc_RNA
+//! feature with a unique `locus_tag` (and matching `ID`) of the form
+//! `<PREFIX>_<NNNNN>`.
+//!
+//! The default `<PREFIX>` is derived deterministically by taking the MD5
+//! hash of the input FASTA file and mapping its first eight hex digits to
+//! ASCII letters (digits `0-9` are shifted into `G-P`). That logic lives in
+//! [`crate::locus_tag`] and corresponds to `sub generate_locus_tag` in the
+//! Perl reference (line 1709). The resulting eight-letter prefix is stable
+//! across runs as long as the input is unchanged.
+//!
+//! Mirrors Perl Prokka lines 1231-1293.
+
 use crate::config::ProkkaConfig;
 use crate::model::{Contig, FeatureType, SeqFeature};
 
-/// Assign locus_tags and protein_ids to all CDS and RNA features.
+/// Assign `locus_tag` (and `protein_id`) to every CDS/RNA feature.
 ///
-/// Optionally creates sister `gene` and `mRNA` features.
+/// Tags are numbered sequentially across all contigs in start-position
+/// order, formatted as `<locustag>_%05d` (where the numeric part is
+/// `counter * increment`). If `config.centre` is set, each CDS also
+/// receives `protein_id=gnl|<centre>|<locus_tag>` because `tbl2asn` refuses
+/// to emit GenBank records for CDS without a valid `/protein_id`
+/// (Perl Prokka line 1240-1243).
+///
+/// When `config.addgenes` is true a sister `gene` feature is spawned for
+/// each CDS, sharing its coordinates, strand, and locus_tag; the CDS gets a
+/// `Parent` tag linking back to it. When `config.addmrna` is true the same
+/// is done with a sister `mRNA`. These are appended after the main loop to
+/// avoid invalidating the iterator.
 ///
 /// Replicates Perl Prokka lines 1231-1293.
 pub fn assign_locus_tags(contigs: &mut [Contig], config: &ProkkaConfig) {

@@ -1,12 +1,21 @@
+//! Tab-separated annotation summary (`.tsv`) writer.
+//!
+//! One header row plus one row per feature. The fixed column order, copied
+//! from Perl Prokka line 1312, is:
+//! `locus_tag  ftype  length_bp  gene  EC_number  COG  product`.
+
 use std::io::Write;
 
 use crate::error::ProkkaError;
 use crate::model::AnnotationResult;
 
-/// Write TSV summary output.
+/// Write the tab-separated annotation summary.
 ///
-/// Replicates Perl Prokka lines 1311-1379.
-/// Header: locus_tag ftype length_bp gene EC_number COG product
+/// The COG identifier is pulled out of any `db_xref` qualifier of the form
+/// `COG:COGNNNN`. Features are emitted in the same sort order as the GFF
+/// and TBL writers (start asc, end desc, has Parent asc). Replicates Perl
+/// Prokka's `tsv_line` helper (line 1299) and the surrounding loop at
+/// lines 1311-1379.
 pub fn write_tsv(
     writer: &mut impl Write,
     result: &AnnotationResult,

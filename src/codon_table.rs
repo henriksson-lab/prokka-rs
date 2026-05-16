@@ -1,4 +1,11 @@
-/// NCBI genetic code translation tables.
+//! NCBI genetic codes (tables 1-25) for DNA-to-protein translation.
+//!
+//! Replaces BioPerl's `Bio::Tools::CodonTable`. Each table is stored as a
+//! pair of 64-byte strings (amino-acid translation and start-codon markers),
+//! and codon lookups are direct indices computed from the three bases. Used
+//! by the CDS predictor and the protein FASTA writer.
+
+/// One NCBI genetic code.
 ///
 /// Each table is represented by two strings:
 /// - `amino_acids`: 64 amino acid translations for all codons in TCAG order
@@ -91,6 +98,10 @@ const TABLE_24_ST: &[u8; 64] = b"---M---------------M---------------M-----------
 const TABLE_25_AA: &[u8; 64] = b"FFLLSSSSYY**CCGWLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG";
 const TABLE_25_ST: &[u8; 64] = b"---M-------------------------------M---------------M------------";
 
+/// Look up the [`GeneticCode`] for an NCBI table number.
+///
+/// Unknown / unallocated table numbers (7, 8, 17-20) and any number above 25
+/// silently fall back to the standard table.
 fn get_table(gcode: u8) -> &'static GeneticCode {
     // Use a static dispatch via match
     static TABLES: [GeneticCode; 26] = [

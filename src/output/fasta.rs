@@ -1,10 +1,28 @@
+//! FASTA-family output writers.
+//!
+//! Produces the four FASTA outputs Prokka emits:
+//!
+//! - `.fna` — raw input contigs ([`write_fna`])
+//! - `.faa` — translated CDS protein sequences ([`write_faa`])
+//! - `.ffn` — nucleotide sequence of each CDS/RNA feature ([`write_ffn`])
+//! - `.fsa` — input contigs with `tbl2asn`-style modifier tags in the
+//!   description line ([`write_fsa`])
+//!
+//! All records are wrapped at 60 columns to match BioPerl's `Bio::SeqIO`
+//! FASTA writer, which the Perl Prokka pipeline uses.
+
 use std::io::Write;
 
 use crate::config::ProkkaConfig;
 use crate::error::ProkkaError;
 use crate::model::{AnnotationResult, Contig, FeatureType};
 
-/// Write a FASTA record with 60-character line wrapping (matching BioPerl output).
+/// Write a single FASTA record with 60-character line wrapping.
+///
+/// Emits `>id` (plus `" desc"` if a non-empty description is supplied) on
+/// the header line, then the sequence in 60-column blocks. This matches
+/// the line wrapping BioPerl uses, which Perl Prokka relies on for all of
+/// its FASTA output.
 pub fn write_fasta(
     writer: &mut impl Write,
     id: &str,
@@ -22,7 +40,10 @@ pub fn write_fasta(
     Ok(())
 }
 
-/// Write all contigs as a FASTA file (.fna).
+/// Write all input contigs to a `.fna` FASTA file.
+///
+/// Each contig is emitted as `>id` followed by the contig sequence with no
+/// description line. This is the unannotated "raw nucleotide" output.
 pub fn write_fna(
     writer: &mut impl Write,
     contigs: &[Contig],
@@ -33,7 +54,12 @@ pub fn write_fna(
     Ok(())
 }
 
-/// Write protein FASTA (.faa) — translated CDS sequences.
+/// Write the protein FASTA (`.faa`) — translated CDS sequences.
+///
+/// Iterates every CDS feature, extracts its nucleotide subsequence
+/// (reverse-complementing if on the minus strand), translates with the
+/// configured genetic code, and writes the protein as `>locus_tag product`.
+/// Replicates Perl Prokka line 1362 (`$p->translate(-codontable_id=>$gcode, -complete=>1)`).
 pub fn write_faa(
     writer: &mut impl Write,
     result: &AnnotationResult,
@@ -57,7 +83,13 @@ pub fn write_faa(
     Ok(())
 }
 
-/// Write nucleotide feature FASTA (.ffn) — CDS, rRNA, tRNA, tmRNA, misc_RNA.
+/// Write the per-feature nucleotide FASTA (`.ffn`).
+///
+/// Emits the nucleotide subsequence of every CDS, rRNA, tRNA, tmRNA, and
+/// misc_RNA feature, in their original strand orientation. Sister `gene`
+/// and `mRNA` features are intentionally skipped. Replicates the feature-type
+/// filter in Perl Prokka line 1364
+/// (`if ($f->primary_tag =~ m/^(CDS|rRNA|tmRNA|tRNA|misc_RNA)$/)`).
 pub fn write_ffn(
     writer: &mut impl Write,
     result: &AnnotationResult,
@@ -86,7 +118,11 @@ pub fn write_ffn(
     Ok(())
 }
 
-/// Write annotated input FASTA (.fsa) with metadata tags in description.
+/// Write the annotated input FASTA (`.fsa`) for `tbl2asn`.
+///
+/// Each contig is written with a description containing the `tbl2asn`
+/// modifier tags `[gcode=...] [organism=...] [strain=...]` (plus an optional
+/// `[plasmid=...]`). Replicates Perl Prokka lines 1320-1326.
 pub fn write_fsa(
     writer: &mut impl Write,
     result: &AnnotationResult,

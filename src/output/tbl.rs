@@ -1,9 +1,25 @@
+//! NCBI five-column feature table (`.tbl`) writer.
+//!
+//! This is the format consumed by `tbl2asn` to produce the GenBank/Sequin
+//! outputs. Each contig is introduced by a `>Feature <id>` line, followed
+//! by one block per feature: a `left<TAB>right<TAB>type` coordinate line
+//! (with `left > right` indicating the minus strand) and any number of
+//! triple-tab-indented qualifier lines (`<TAB><TAB><TAB>key<TAB>value`).
+
 use std::io::Write;
 
 use crate::error::ProkkaError;
 use crate::model::{AnnotationResult, Strand};
 
-/// Write NCBI feature table (.tbl) output.
+/// Write the NCBI five-column feature table (`.tbl`).
+///
+/// Features inside a contig are sorted by `(start asc, end desc, has Parent
+/// asc)` to match the Perl Prokka comparator at line 1329. Coordinates are
+/// written as `start<TAB>end` for the forward strand and `end<TAB>start`
+/// for the reverse strand, as expected by `tbl2asn`. Tags whose name starts
+/// with an uppercase letter (GFF-specific things like `ID`, `Parent`,
+/// `Name`) are skipped, except for `EC_number` — matching Perl Prokka line
+/// 1345.
 ///
 /// Replicates Perl Prokka lines 1328-1349.
 pub fn write_tbl(

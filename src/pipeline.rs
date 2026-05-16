@@ -1,7 +1,25 @@
+//! Top-level pipeline orchestration.
+//!
+//! Drives the same ten-step sequence as the Perl `prokka` script (body
+//! around lines 250-1290): input → tRNA/tmRNA → rRNA → ncRNA → CRISPR →
+//! CDS → CDS annotation → product cleanup → gene dedup + locus tag
+//! assignment → output writers.
+//!
+//! Two public entry points:
+//!
+//! - [`annotate`] is the in-memory library API. It takes contigs already
+//!   loaded into [`Contig`] structs and returns an [`AnnotationResult`]
+//!   without touching the filesystem (except for the few prediction tools
+//!   that still shell out and need an on-disk FASTA).
+//! - [`run`] is the high-level CLI driver: it loads input, applies the
+//!   `--compliant` preset, calls [`annotate`], and writes every output file
+//!   (.gff/.tbl/.tsv/.faa/.ffn/.fsa/.txt/.log and optionally .gbk/.sqn).
+
 use std::io::Write;
 use std::path::Path;
 
-/// Get current local time as HH:MM:SS string (matching Perl Prokka's log format).
+/// Format the current local time as `HH:MM:SS`, matching Perl Prokka's
+/// `msg()` timestamp (line 1536) via `libc::localtime_r`.
 fn current_time_str() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -18,11 +36,20 @@ fn current_time_str() -> String {
     {
         // Fallback to UTC on non-unix
         let day_secs = (secs as u64 % 86400) as u32;
-        format!("{:02}:{:02}:{:02}", day_secs / 3600, (day_secs % 3600) / 60, day_secs % 60)
+        format!(
+            "{:02}:{:02}:{:02}",
+            day_secs / 3600,
+            (day_secs % 3600) / 60,
+            day_secs % 60
+        )
     }
 }
 
-/// Convert days since Unix epoch to (year, month, day).
+/// Convert days since Unix epoch to a `(year, month, day)` triple.
+///
+/// Used as the non-Unix fallback for date-stamped default prefixes;
+/// implements the proleptic Gregorian algorithm from Howard Hinnant's
+/// `chrono` paper.
 pub fn days_to_date(days: i64) -> (i64, u32, u32) {
     // Algorithm from http://howardhinnant.github.io/date_algorithms.html
     let z = days + 719468;
@@ -44,9 +71,13 @@ use crate::error::ProkkaError;
 use crate::model::{AnnotationResult, AnnotationStats, Contig};
 use crate::predict::overlap::filter_overlapping_cds;
 
-/// Build the annotation database hierarchy in priority order.
+/// Build the ordered list of annotation databases to search.
 ///
-/// Replicates Perl Prokka lines 940-1063.
+/// Priority order (highest first) matches Perl Prokka lines 940-1063:
+/// `--proteins`, `--hmms`, genus DB (`--usegenus`), kingdom IS database,
+/// kingdom AMR database, UniProtKB/Swiss-Prot for the kingdom, and finally
+/// every pressed HMM under `dbdir/hmm/*.h3m` in sorted order. HMM databases
+/// are skipped for the `Viruses` kingdom, mirroring Perl behaviour.
 fn build_annotation_databases(config: &ProkkaConfig) -> Vec<AnnotationDb> {
     let mut databases = Vec::new();
     let kingdom = config.kingdom.as_str();
@@ -57,7 +88,9 @@ fn build_annotation_databases(config: &ProkkaConfig) -> Vec<AnnotationDb> {
     if let Some(ref proteins) = config.proteins {
         let fasta_path = match crate::genbank_to_fasta::detect_format(proteins) {
             Ok("genbank") => {
-                let converted = config.outdir.clone()
+                let converted = config
+                    .outdir
+                    .clone()
                     .unwrap_or_else(|| std::path::PathBuf::from("."))
                     .join("proteins.faa");
                 match crate::genbank_to_fasta::genbank_to_fasta(proteins, &converted) {
@@ -66,7 +99,9 @@ fn build_annotation_databases(config: &ProkkaConfig) -> Vec<AnnotationDb> {
                 }
             }
             Ok("embl") => {
-                let converted = config.outdir.clone()
+                let converted = config
+                    .outdir
+                    .clone()
                     .unwrap_or_else(|| std::path::PathBuf::from("."))
                     .join("proteins.faa");
                 match crate::genbank_to_fasta::embl_to_fasta(proteins, &converted) {
@@ -77,7 +112,8 @@ fn build_annotation_databases(config: &ProkkaConfig) -> Vec<AnnotationDb> {
             _ => proteins.display().to_string(),
         };
 
-        let src = proteins.file_name()
+        let src = proteins
+            .file_name()
             .map(|f| f.to_string_lossy().to_string())
             .unwrap_or_default();
         databases.push(AnnotationDb {
@@ -95,7 +131,8 @@ fn build_annotation_databases(config: &ProkkaConfig) -> Vec<AnnotationDb> {
 
     // User-supplied HMMs
     if let Some(ref hmms) = config.hmms {
-        let src = hmms.file_name()
+        let src = hmms
+            .file_name()
             .map(|f| f.to_string_lossy().replace(".hmm", ""))
             .unwrap_or_default();
         databases.push(AnnotationDb {
@@ -161,27 +198,33 @@ fn build_annotation_databases(config: &ProkkaConfig) -> Vec<AnnotationDb> {
         });
     }
 
-    // HMM databases (HAMAP, etc.)
+    // HMM databases (HAMAP, etc.).
+    //
+    // Perl Prokka's `hmms()` (prokka/bin/prokka:1622) globs `$dbdir/hmm/*.h3m`
+    // — it requires the *pressed* index to exist before pushing the DB, and
+    // glob() returns sorted output. We do the same: enumerate by .h3m, sort,
+    // and reference the .hmm path (hmmer.rs falls back to .h3m at load time).
     if kingdom != "Viruses" {
         let hmm_dir = dbdir.join("hmm");
         if hmm_dir.exists() {
             if let Ok(entries) = std::fs::read_dir(&hmm_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if let Some(ext) = path.extension() {
-                        if ext == "hmm" {
-                            let name = path.file_stem()
-                                .map(|s| s.to_string_lossy().to_string())
-                                .unwrap_or_default();
-                            databases.push(AnnotationDb {
-                                path: path.display().to_string(),
-                                source_prefix: format!("protein motif:{}:", name),
-                                format: DbFormat::Hmmer3,
-                                evalue: None,
-                                min_coverage: None,
-                            });
-                        }
-                    }
+                let mut names: Vec<String> = entries
+                    .flatten()
+                    .filter_map(|entry| {
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        name.strip_suffix(".hmm.h3m").map(|s| s.to_string())
+                    })
+                    .collect();
+                names.sort();
+                for name in names {
+                    let hmm_path = hmm_dir.join(format!("{}.hmm", name));
+                    databases.push(AnnotationDb {
+                        path: hmm_path.display().to_string(),
+                        source_prefix: format!("protein motif:{}:", name),
+                        format: DbFormat::Hmmer3,
+                        evalue: None,
+                        min_coverage: None,
+                    });
                 }
             }
         }
@@ -190,10 +233,29 @@ fn build_annotation_databases(config: &ProkkaConfig) -> Vec<AnnotationDb> {
     databases
 }
 
-/// Run the full Prokka annotation pipeline.
+/// Run the full Prokka annotation pipeline on already-loaded contigs.
 ///
-/// This is the main library entry point. It takes contigs and returns
-/// an AnnotationResult without requiring file I/O.
+/// This is the in-memory library entry point. It walks through the same
+/// ten ordered steps as the Perl `prokka` script body:
+///
+/// 1. tRNA/tmRNA prediction (Aragorn, external)
+/// 2. rRNA prediction (Barrnap, external)
+/// 3. ncRNA prediction (Infernal cmscan, only if `--rfam`)
+/// 4. CRISPR detection (minced, external)
+/// 5. CDS prediction (prodigal-rs, native) and overlap filtering vs. RNAs
+/// 6. SignalP signal-peptide prediction (only if `--gram` is set)
+/// 7. CDS annotation against the ordered DB list (BLAST via blast-rs,
+///    HMMER via hmmer-pure-rs; see `build_annotation_databases`)
+/// 8. `/product` cleanup (skipped under `--rawproduct` or `--noanno`) and
+///    adjacent-CDS pseudo-gene detection
+/// 9. Gene-name deduplication and locus tag assignment; unannotated CDS get
+///    the kingdom-appropriate fallback product label
+/// 10. Summary statistics
+///
+/// `fna_path` is only used to feed the external prediction tools that still
+/// require a FASTA file on disk; if `None`, those steps are skipped.
+///
+/// Does **not** write any output files — see [`run`] for that.
 pub fn annotate(
     mut contigs: Vec<Contig>,
     config: &ProkkaConfig,
@@ -201,19 +263,14 @@ pub fn annotate(
 ) -> Result<AnnotationResult, ProkkaError> {
     let mut log = Vec::new();
 
-    log.push(format!(
-        "Annotating as >>> {} <<<",
-        config.kingdom.as_str()
-    ));
+    log.push(format!("Annotating as >>> {} <<<", config.kingdom.as_str()));
     log.push(format!("Loaded {} contigs", contigs.len()));
 
     let total_bp: usize = contigs.iter().map(|c| c.len()).sum();
     log.push(format!("Total {} bp", total_bp));
 
-    let contig_lengths: Vec<(String, usize)> = contigs
-        .iter()
-        .map(|c| (c.id.clone(), c.len()))
-        .collect();
+    let contig_lengths: Vec<(String, usize)> =
+        contigs.iter().map(|c| (c.id.clone(), c.len())).collect();
 
     // ---- Phase 3: Feature prediction ----
 
@@ -257,7 +314,9 @@ pub fn annotate(
     let mut ncrna_features = Vec::new();
     if config.rfam {
         if let Some(fna) = fna_path {
-            match crate::predict::ncrna::predict_ncrna(fna, config, total_bp) {
+            let valid_ids: std::collections::HashSet<String> =
+                contigs.iter().map(|c| c.id.clone()).collect();
+            match crate::predict::ncrna::predict_ncrna(fna, config, total_bp, &valid_ids) {
                 Ok(features) => {
                     log.push(format!("Found {} ncRNAs", features.len()));
                     ncrna_features = features;
@@ -286,7 +345,8 @@ pub fn annotate(
     }
 
     // Collect all RNA features for overlap exclusion
-    let all_rna: Vec<_> = trna_features.iter()
+    let all_rna: Vec<_> = trna_features
+        .iter()
         .chain(rrna_features.iter())
         .chain(crispr_features.iter())
         .cloned()
@@ -329,10 +389,9 @@ pub fn annotate(
 
     // Sort features by start position within each contig
     for contig in &mut contigs {
-        contig.features.sort_by(|a, b| {
-            a.start.cmp(&b.start)
-                .then(b.end.cmp(&a.end))
-        });
+        contig
+            .features
+            .sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
     }
 
     // 6. Signal peptide detection (SignalP, if --gram)
@@ -366,13 +425,18 @@ pub fn annotate(
 
         // Build the annotation database hierarchy
         let databases = build_annotation_databases(config);
-        let num_cds: usize = contigs.iter()
+        let num_cds: usize = contigs
+            .iter()
             .flat_map(|c| c.features.iter())
             .filter(|f| f.feature_type == crate::model::FeatureType::CDS)
             .count();
 
         // Create one shared thread pool for all BLAST searches
-        let num_threads = if config.cpus == 0 { rayon::current_num_threads() } else { config.cpus as usize };
+        let num_threads = if config.cpus == 0 {
+            rayon::current_num_threads()
+        } else {
+            config.cpus as usize
+        };
         let blast_pool = if num_threads > 1 {
             rayon::ThreadPoolBuilder::new()
                 .num_threads(num_threads)
@@ -385,14 +449,20 @@ pub fn annotate(
         for db in &databases {
             // Skip HMMs in --fast mode
             if config.fast && db.format == crate::annotate::database::DbFormat::Hmmer3 {
-                log.push(format!("In --fast mode, skipping HMM search against {}", db.path));
+                log.push(format!(
+                    "In --fast mode, skipping HMM search against {}",
+                    db.path
+                ));
                 continue;
             }
 
             // Count remaining unannotated CDS
-            let unannotated: usize = contigs.iter()
+            let unannotated: usize = contigs
+                .iter()
                 .flat_map(|c| c.features.iter())
-                .filter(|f| f.feature_type == crate::model::FeatureType::CDS && !f.has_tag("product"))
+                .filter(|f| {
+                    f.feature_type == crate::model::FeatureType::CDS && !f.has_tag("product")
+                })
                 .count();
 
             if unannotated == 0 {
@@ -407,7 +477,12 @@ pub fn annotate(
             let annotated = match db.format {
                 crate::annotate::database::DbFormat::Blast => {
                     log.push(format!("Will use BLAST to search against {}", db.path));
-                    crate::annotate::blast::annotate_blast(&mut contigs, db, config, blast_pool.as_ref())?
+                    crate::annotate::blast::annotate_blast(
+                        &mut contigs,
+                        db,
+                        config,
+                        blast_pool.as_ref(),
+                    )?
                 }
                 crate::annotate::database::DbFormat::Hmmer3 => {
                     log.push(format!("Will use HMMER to search against {}", db.path));
@@ -417,7 +492,6 @@ pub fn annotate(
 
             log.push(format!("Annotated {} CDS from {}", annotated, db.path));
         }
-
     }
 
     // ---- Phase 5: Post-processing ----
@@ -432,7 +506,8 @@ pub fn annotate(
                     continue;
                 }
                 if let Some(product) = feature.get_tag("product").map(|s| s.to_string()) {
-                    let cleaned = crate::postprocess::product::cleanup_product(&product, &good_products);
+                    let cleaned =
+                        crate::postprocess::product::cleanup_product(&product, &good_products);
                     if cleaned != product {
                         feature.remove_tag("product");
                         feature.add_tag("product", &cleaned);
@@ -455,7 +530,11 @@ pub fn annotate(
     // Detect possible pseudo genes (adjacent CDS with same annotation)
     for contig in &contigs {
         let mut prev_product = String::new();
-        for feature in contig.features.iter().filter(|f| f.feature_type == crate::model::FeatureType::CDS) {
+        for feature in contig
+            .features
+            .iter()
+            .filter(|f| f.feature_type == crate::model::FeatureType::CDS)
+        {
             let product = feature.get_tag("product").unwrap_or("").to_string();
             if !product.is_empty()
                 && product == prev_product
@@ -478,18 +557,26 @@ pub fn annotate(
     crate::postprocess::locus_assign::assign_locus_tags(&mut contigs, config);
 
     // Label unannotated CDS (after locus_tag assignment, to match Perl tag order)
-    let empty_label = if config.noanno { "unannotated protein" } else { crate::postprocess::product::HYPO };
+    let empty_label = if config.noanno {
+        "unannotated protein"
+    } else {
+        crate::postprocess::product::HYPO
+    };
     let mut num_hypo = 0;
     for contig in &mut contigs {
         for feature in &mut contig.features {
-            if feature.feature_type == crate::model::FeatureType::CDS && !feature.has_tag("product") {
+            if feature.feature_type == crate::model::FeatureType::CDS && !feature.has_tag("product")
+            {
                 feature.add_tag("product", empty_label);
                 num_hypo += 1;
             }
         }
     }
     if num_hypo > 0 {
-        log.push(format!("Labelled {} proteins as '{}'", num_hypo, empty_label));
+        log.push(format!(
+            "Labelled {} proteins as '{}'",
+            num_hypo, empty_label
+        ));
     }
 
     // ---- Build statistics ----
@@ -501,7 +588,10 @@ pub fn annotate(
 
     for contig in &contigs {
         for f in &contig.features {
-            *stats.feature_counts.entry(f.feature_type.as_str().to_string()).or_insert(0) += 1;
+            *stats
+                .feature_counts
+                .entry(f.feature_type.as_str().to_string())
+                .or_insert(0) += 1;
         }
     }
 
@@ -512,9 +602,20 @@ pub fn annotate(
     })
 }
 
-/// Run the full pipeline from an input FASTA file, writing all outputs.
+/// Run the full pipeline starting from an input FASTA file on disk.
 ///
-/// This is the high-level function used by the CLI.
+/// This is the high-level driver used by the CLI binary. In order, it:
+///
+/// 1. Applies the `--compliant` preset and validates the config.
+/// 2. Rejects incompatible flag combinations (matches Perl lines 267-270).
+/// 3. Auto-derives `locustag` (from the input file's MD5),
+///    `prefix` (`PROKKA_MMDDYYYY`), and `outdir` if not supplied.
+/// 4. Creates the output directory (honouring `--force`).
+/// 5. Loads and sanitizes contigs via [`crate::input::load_and_sanitize_fasta`].
+/// 6. Writes the sanitized `.fna`, then calls [`annotate`].
+/// 7. Writes every output file: `.gff`, `.tbl`, `.tsv`, `.faa`, `.ffn`,
+///    `.fsa`, `.txt`, `.log` and (if tbl2asn is available) `.gbk` and `.sqn`.
+/// 8. Prints the timestamped log and walltime summary to stderr.
 pub fn run(input: &Path, config: &mut ProkkaConfig) -> Result<(), ProkkaError> {
     let start_time = std::time::Instant::now();
 
@@ -549,24 +650,35 @@ pub fn run(input: &Path, config: &mut ProkkaConfig) -> Result<(), ProkkaError> {
         config.locustag = Some(crate::locus_tag::generate_locus_tag(input)?);
     }
 
-    // Resolve output directory
+    // Resolve output directory.
+    // Perl prokka:353 uses localtime->mdy(''), so match the local timezone.
     let prefix = config.prefix.clone().unwrap_or_else(|| {
-        // Generate date-based prefix without chrono dependency.
-        // Use std::time to get seconds since epoch, then compute MMDDYYYY.
         let secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs();
-        // Simple date calculation (UTC, matching Perl Prokka's US date format)
-        let days = (secs / 86400) as i64;
-        let (y, m, d) = days_to_date(days);
-        format!("PROKKA_{:02}{:02}{:04}", m, d, y)
+            .as_secs() as i64;
+        #[cfg(unix)]
+        {
+            let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+            unsafe { libc::localtime_r(&secs, &mut tm) };
+            let y = tm.tm_year as i64 + 1900;
+            let m = (tm.tm_mon + 1) as u32;
+            let d = tm.tm_mday as u32;
+            format!("PROKKA_{:02}{:02}{:04}", m, d, y)
+        }
+        #[cfg(not(unix))]
+        {
+            let days = (secs / 86400) as i64;
+            let (y, m, d) = days_to_date(days);
+            format!("PROKKA_{:02}{:02}{:04}", m, d, y)
+        }
     });
     config.prefix = Some(prefix.clone());
 
-    let outdir = config.outdir.clone().unwrap_or_else(|| {
-        std::path::PathBuf::from(&prefix)
-    });
+    let outdir = config
+        .outdir
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from(&prefix));
 
     // Create output directory
     if outdir.exists() {
@@ -582,11 +694,7 @@ pub fn run(input: &Path, config: &mut ProkkaConfig) -> Result<(), ProkkaError> {
 
     let total_bp: usize = contigs.iter().map(|c| c.len()).sum();
     if !config.quiet {
-        eprintln!(
-            "Wrote {} contigs totalling {} bp.",
-            contigs.len(),
-            total_bp
-        );
+        eprintln!("Wrote {} contigs totalling {} bp.", contigs.len(), total_bp);
     }
 
     // Write .fna
@@ -670,7 +778,10 @@ pub fn run(input: &Path, config: &mut ProkkaConfig) -> Result<(), ProkkaError> {
     if !config.quiet {
         eprintln!("Annotation finished successfully.");
         let walltime = start_time.elapsed();
-        eprintln!("Walltime used: {:.2} minutes", walltime.as_secs_f64() / 60.0);
+        eprintln!(
+            "Walltime used: {:.2} minutes",
+            walltime.as_secs_f64() / 60.0
+        );
         eprintln!("Output files:");
         if let Ok(entries) = std::fs::read_dir(&outdir) {
             let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();

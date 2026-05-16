@@ -1,3 +1,10 @@
+//! Deterministic locus_tag prefix from the input FASTA's MD5.
+//!
+//! Verbatim port of Perl Prokka's `generate_locus_tag` (line 1709). Used when
+//! the user does not pass `--locustag`: the same input file always produces
+//! the same prefix, so re-running Prokka on the same data yields stable
+//! identifiers across runs.
+
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
